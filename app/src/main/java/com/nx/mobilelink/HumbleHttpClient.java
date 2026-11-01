@@ -89,6 +89,9 @@ public class HumbleHttpClient {
         }
 
         sock = new Socket();
+        if (network == null) {
+            network = NetworkManager.getActiveWifiNetwork();
+        }
         if (network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             try {
                 network.bindSocket(sock);

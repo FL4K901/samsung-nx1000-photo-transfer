@@ -1,9 +1,9 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.4.1-blue.svg)](release/NX-MobileLink-v1.4.1.apk)
+[![Release](https://img.shields.io/badge/Release-v1.4.2-blue.svg)](release/NX-MobileLink-v1.4.2.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
-[![APK Size](https://img.shields.io/badge/APK%20Size-108%20KB-success.svg)](release/NX-MobileLink-v1.4.1.apk)
+[![APK Size](https://img.shields.io/badge/APK%20Size-112%20KB-success.svg)](release/NX-MobileLink-v1.4.2.apk)
 
 Modern, open-source Android application for wireless photo and video transfer from **Samsung NX1000** (and compatible Samsung NX series cameras) to modern Android smartphones running **Android 7.0 through Android 14+**.
 
@@ -43,7 +43,7 @@ This project is a clean-room, reverse-engineered native Android solution that co
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.4.1.apk](release/NX-MobileLink-v1.4.1.apk)**
+👉 **[Download NX-MobileLink-v1.4.2.apk](release/NX-MobileLink-v1.4.2.apk)**
 
 1. Transfer or download the APK to your Android device.
 2. Open the file and allow "Install from Unknown Sources" if prompted.
@@ -80,7 +80,7 @@ Requires Android SDK build-tools and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.4.1.apk`.
+The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.4.2.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -91,6 +91,18 @@ The output APK will be generated, zip-aligned, and signed with both v1 and v2 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.4.2
+* **Universal Process-Level Wi-Fi Binding (`NetworkManager`)**:
+  - Solves the modern Android cellular data bypass bug where Android routes camera traffic to mobile data when connected to an AP with no internet.
+  - Synchronously scans `ConnectivityManager.getAllNetworks()` and executes `cm.bindProcessToNetwork()` across all activities (`MainActivity`, `MobileLinkActivity`, `ViewfinderActivity`).
+* **Multi-Source Camera IP Discovery**:
+  - Automatically queries `LinkProperties.getRoutes()`, `DhcpInfo.gateway`, `DhcpInfo.serverAddress`, and derives subnet `.1` from the device's IP.
+  - Eliminates connection failures caused by non-standard gateway settings or zeroed DHCP gateway fields.
+* **Socket-Gentle Port Probing**:
+  - Replaced bulk parallel HTTP flood with fast 400ms TCP socket pre-checks on primary Samsung ports (**52235**, **7676**, **7679**, **7788**, **80**), protecting the camera's limited RTOS socket pool.
+* **Faster Viewfinder Handshake**:
+  - Instantaneous camera IP detection and UPnP endpoint discovery in under 400ms, eliminating the 15-second RVF camera shutdown timeout.
 
 ### Version 1.4.1
 * **100% English UI**: Clean, professional internationalization across all views, strings, toasts, and dialogs.

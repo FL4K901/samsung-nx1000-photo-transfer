@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.NetworkInfo;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
@@ -60,6 +61,21 @@ public class ViewfinderActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         initViews();
+        NetworkManager.bindProcessToWifi(this);
+        NetworkManager.registerWifiMonitoring(this, new NetworkManager.WifiListener() {
+            @Override
+            public void onWifiChanged(final boolean connected, String ssid, Network network) {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        updateStatusBanner();
+                        if (connected && connectedCameraIp == null && !isConnecting) {
+                            startConnection(null);
+                        }
+                    }
+                });
+            }
+        });
         updateStatusBanner();
 
         // Auto-connect if Wi-Fi is active
@@ -122,37 +138,19 @@ public class ViewfinderActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        NetworkManager.bindProcessToWifi(this);
         updateStatusBanner();
+        if (connectedCameraIp == null && isConnectedToWifi() && !isConnecting) {
+            startConnection(null);
+        }
     }
 
     private boolean isConnectedToWifi() {
-        try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (cm != null) {
-                NetworkInfo netInfo = cm.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
-                return netInfo != null && netInfo.isConnected();
-            }
-        } catch (Exception ignored) {}
-        return false;
+        return NetworkManager.isWifiConnected(this);
     }
 
     private String getCurrentWifiSsid() {
-        try {
-            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wm != null) {
-                WifiInfo wi = wm.getConnectionInfo();
-                if (wi != null && wi.getSSID() != null) {
-                    String ssid = wi.getSSID();
-                    if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() > 2) {
-                        ssid = ssid.substring(1, ssid.length() - 1);
-                    }
-                    if (!ssid.equals("<unknown ssid>")) {
-                        return ssid;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
+        return NetworkManager.getCurrentWifiSsid(this);
     }
 
     private void updateStatusBanner() {

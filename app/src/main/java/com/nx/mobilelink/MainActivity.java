@@ -50,7 +50,6 @@ public class MainActivity extends Activity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private WifiManager.WifiLock wifiLock;
     private PowerManager.WakeLock wakeLock;
-    private ConnectivityManager.NetworkCallback networkCallback;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -61,7 +60,17 @@ public class MainActivity extends Activity {
 
         initViews();
         acquireLocks();
-        registerWifiNetworkCallback();
+        NetworkManager.registerWifiMonitoring(this, new NetworkManager.WifiListener() {
+            @Override
+            public void onWifiChanged(boolean connected, String ssid, Network network) {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        updateWifiStatusBanner();
+                    }
+                });
+            }
+        });
         checkAndRequestPermissions();
         updateWifiStatusBanner();
     }
@@ -104,42 +113,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        NetworkManager.bindProcessToWifi(this);
         updateWifiStatusBanner();
     }
 
-    private boolean isConnectedToWifi() {
-        try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (cm != null) {
-                NetworkInfo netInfo = cm.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
-                return netInfo != null && netInfo.isConnected();
-            }
-        } catch (Exception ignored) {}
-        return false;
-    }
-
-    private String getCurrentWifiSsid() {
-        try {
-            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wm != null) {
-                WifiInfo wi = wm.getConnectionInfo();
-                if (wi != null && wi.getSSID() != null) {
-                    String ssid = wi.getSSID();
-                    if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() > 2) {
-                        ssid = ssid.substring(1, ssid.length() - 1);
-                    }
-                    if (!ssid.equals("<unknown ssid>")) {
-                        return ssid;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
     private void updateWifiStatusBanner() {
-        if (isConnectedToWifi()) {
-            String ssid = getCurrentWifiSsid();
+        NetworkManager.bindProcessToWifi(this);
+        if (NetworkManager.isWifiConnected(this)) {
+            String ssid = NetworkManager.getCurrentWifiSsid(this);
             String name = (ssid != null) ? "Connected to: " + ssid : "Connected to Wi-Fi";
             txtHomeWifiName.setText(name);
             txtHomeWifiName.setTextColor(0xFFFFFFFF);
@@ -197,60 +178,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void registerWifiNetworkCallback() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            try {
-                final ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-                if (cm != null) {
-                    NetworkRequest request = new NetworkRequest.Builder()
-                            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                            .build();
-
-                    networkCallback = new ConnectivityManager.NetworkCallback() {
-                        @Override
-                        public void onAvailable(Network network) {
-                            Log.i(TAG, "Wi-Fi Network available: " + network);
-                            MobileLinkClient.setActiveWifiNetwork(network);
-                            ViewfinderClient.setActiveWifiNetwork(network);
-
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                cm.bindProcessToNetwork(network);
-                                Log.i(TAG, "Process successfully bound to Wi-Fi network");
-                            }
-
-                            mainHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    updateWifiStatusBanner();
-                                }
-                            });
-                        }
-
-                        @Override
-                        public void onLost(Network network) {
-                            Log.i(TAG, "Wi-Fi Network lost: " + network);
-                            MobileLinkClient.setActiveWifiNetwork(null);
-                            ViewfinderClient.setActiveWifiNetwork(null);
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                cm.bindProcessToNetwork(null);
-                            }
-                            mainHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    updateWifiStatusBanner();
-                                }
-                            });
-                        }
-                    };
-
-                    cm.registerNetworkCallback(request, networkCallback);
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Could not register NetworkCallback: " + e.getMessage());
-            }
-        }
-    }
-
     private void checkAndRequestPermissions() {
         if (Build.VERSION.SDK_INT >= 23) {
             List<String> needed = new ArrayList<>();
@@ -280,18 +207,6 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (networkCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            try {
-                ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-                if (cm != null) {
-                    cm.unregisterNetworkCallback(networkCallback);
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        cm.bindProcessToNetwork(null);
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-
         if (wifiLock != null && wifiLock.isHeld()) {
             try {
                 wifiLock.release();

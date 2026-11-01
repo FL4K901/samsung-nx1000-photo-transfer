@@ -198,18 +198,21 @@ public class ViewfinderClient {
     }
 
     private static Socket createSocket() throws Exception {
-        if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            Socket s = new Socket();
-            activeWifiNetwork.bindSocket(s);
-            return s;
+        Socket s = new Socket();
+        Network net = NetworkManager.getActiveWifiNetwork();
+        if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                net.bindSocket(s);
+            } catch (Exception ignored) {}
         }
-        return new Socket();
+        return s;
     }
 
     private static HttpURLConnection openConnection(URL url) throws Exception {
         HttpURLConnection conn;
-        if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            conn = (HttpURLConnection) activeWifiNetwork.openConnection(url);
+        Network net = NetworkManager.getActiveWifiNetwork();
+        if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            conn = (HttpURLConnection) net.openConnection(url);
         } else {
             conn = (HttpURLConnection) url.openConnection();
         }
@@ -221,11 +224,35 @@ public class ViewfinderClient {
             @Override
             public void run() {
                 appContext = context.getApplicationContext();
-                final String cameraIp = (customIp != null && !customIp.trim().isEmpty()) ? customIp.trim() : getWifiGatewayIp(context);
+                NetworkManager.bindProcessToWifi(appContext);
+                NetworkManager.acquireLocks(appContext);
+
+                final List<String> candidateIps = new ArrayList<>();
+                if (customIp != null && !customIp.trim().isEmpty()) {
+                    candidateIps.add(customIp.trim());
+                }
+                List<String> discovered = NetworkManager.getCandidateCameraIps(appContext);
+                for (String ip : discovered) {
+                    if (!candidateIps.contains(ip)) candidateIps.add(ip);
+                }
+
+                // Detect active camera IP
+                String cameraIp = null;
+                for (String ip : candidateIps) {
+                    if (isPortOpen(ip, 7679, 400) || isPortOpen(ip, 7788, 400) || isPortOpen(ip, 52235, 400)) {
+                        cameraIp = ip;
+                        Log.i(TAG, "Detected active RVF camera IP: " + cameraIp);
+                        break;
+                    }
+                }
+                if (cameraIp == null && !candidateIps.isEmpty()) {
+                    cameraIp = candidateIps.get(0);
+                }
                 activeCameraIp = cameraIp;
-                final String ua = getUserAgent(context);
+
+                final String ua = getUserAgent(appContext);
                 final String rawMac = ua.replace("SEC_RVF_", "");
-                final String localIp = getLocalIpAddress(context);
+                final String localIp = NetworkManager.getLocalIpAddress(appContext);
 
                 startLocalServer();
                 int localPort = (localServer != null) ? localServer.getPort() : 7788;
@@ -242,7 +269,7 @@ public class ViewfinderClient {
                             "HOST-port: " + localPort + "\r\n" +
                             "Access-Method: manual\r\n" +
                             "Connection: close\r\n\r\n";
-                    sendRawHttpRequest(cameraIp, 7788, req7788, 1200);
+                    sendRawHttpRequest(cameraIp, 7788, req7788, 800);
                     Log.i(TAG, "Handshake to 7788 succeeded");
                 } catch (Exception e) {
                     Log.w(TAG, "Handshake to 7788 warning: " + e.getMessage());
@@ -250,8 +277,9 @@ public class ViewfinderClient {
 
                 try {
                     DatagramSocket udpSock = new DatagramSocket();
-                    if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        try { activeWifiNetwork.bindSocket(udpSock); } catch (Exception ignored) {}
+                    Network net = NetworkManager.getActiveWifiNetwork();
+                    if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        try { net.bindSocket(udpSock); } catch (Exception ignored) {}
                     }
                     String udpMsg = "GET /mode/control HTTP/1.0\r\n" +
                             "HOST: " + cameraIp + ":7788\r\n" +
@@ -278,8 +306,8 @@ public class ViewfinderClient {
                 // 5. Start continuous keep-alive ping loop
                 startKeepAlive(cameraIp, ua, rawMac, localIp, localPort);
 
-                boolean port7679Open = isPortOpen(cameraIp, 7679, 1500);
-                boolean port7788Open = isPortOpen(cameraIp, 7788, 1500);
+                boolean port7679Open = isPortOpen(cameraIp, 7679, 1000);
+                boolean port7788Open = isPortOpen(cameraIp, 7788, 1000);
 
                 if (upnpConfirmed || port7679Open || port7788Open) {
                     Log.i(TAG, "Remote Viewfinder connected! StreamURL=" + activeStreamUrl + ", ControlURL=" + activeControlUrl);
@@ -296,25 +324,24 @@ public class ViewfinderClient {
      */
     private static void discoverEndpoints(String cameraIp) {
         activeEndpoints.clear();
-        int[] ports = new int[]{52235, 7676, 7679, 80};
+        int[] ports = new int[]{52235, 7676};
         String[] paths = new String[]{
-                "/dmr/SamsungMRDesc.xml",
                 "/description.xml",
                 "/smp_10_",
-                "/upnp/ContentDirectory.xml",
-                "/upnp/SamsungDesc.xml",
-                "/rootDesc.xml"
+                "/dmr/SamsungMRDesc.xml"
         };
 
         for (int p : ports) {
+            if (!isPortOpen(cameraIp, p, 300)) continue;
             for (String path : paths) {
                 String testUrl = "http://" + cameraIp + ":" + p + path;
                 try {
                     URL u = new URL(testUrl);
                     HttpURLConnection conn = openConnection(u);
-                    conn.setConnectTimeout(600);
-                    conn.setReadTimeout(1200);
+                    conn.setConnectTimeout(1500);
+                    conn.setReadTimeout(2000);
                     conn.setRequestProperty("User-Agent", getUserAgent(appContext));
+                    conn.setRequestProperty("Connection", "close");
                     if (conn.getResponseCode() == 200) {
                         InputStream in = conn.getInputStream();
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();

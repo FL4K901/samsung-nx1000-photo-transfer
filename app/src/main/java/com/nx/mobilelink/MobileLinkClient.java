@@ -197,10 +197,33 @@ public class MobileLinkClient {
         return sb.toString();
     }
 
+    public static Socket createSocket() throws Exception {
+        Socket s = new Socket();
+        Network net = NetworkManager.getActiveWifiNetwork();
+        if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                net.bindSocket(s);
+            } catch (Exception ignored) {}
+        }
+        return s;
+    }
+
+    public static boolean isPortOpen(String host, int port, int timeoutMs) {
+        try {
+            Socket s = createSocket();
+            s.connect(new InetSocketAddress(host, port), timeoutMs);
+            s.close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public static HttpURLConnection openConnection(URL url) throws Exception {
         HttpURLConnection conn;
-        if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            conn = (HttpURLConnection) activeWifiNetwork.openConnection(url);
+        Network net = NetworkManager.getActiveWifiNetwork();
+        if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            conn = (HttpURLConnection) net.openConnection(url);
         } else {
             conn = (HttpURLConnection) url.openConnection();
         }
@@ -212,97 +235,72 @@ public class MobileLinkClient {
             @Override
             public void run() {
                 appContext = context.getApplicationContext();
-                WifiManager.MulticastLock multicastLock = null;
-                try {
-                    WifiManager wm = (WifiManager) appContext.getSystemService(Context.WIFI_SERVICE);
-                    if (wm != null) {
-                        multicastLock = wm.createMulticastLock("NX_MOBILELINK_DISCOVERY");
-                        multicastLock.setReferenceCounted(true);
-                        multicastLock.acquire();
-                    }
-                } catch (Exception ignored) {}
+                NetworkManager.bindProcessToWifi(appContext);
+                NetworkManager.acquireLocks(appContext);
 
                 final DeviceInfo[] foundDevice = new DeviceInfo[1];
                 final AtomicBoolean resolved = new AtomicBoolean(false);
 
-                // MobileLink UPnP MediaServer candidate ports
-                final int[] candidatePorts = (customPort > 0) ? new int[]{customPort} :
-                        new int[]{52235, 7676, 4004, 8080, 80, 50000, 49152, 49153, 49154};
-
-                final String gatewayIp = getWifiGatewayIp(context);
                 final List<String> candidateIps = new ArrayList<>();
                 if (customIp != null && !customIp.trim().isEmpty()) {
                     candidateIps.add(customIp.trim());
                 }
-                if (gatewayIp != null && !candidateIps.contains(gatewayIp)) candidateIps.add(gatewayIp);
-                if (!candidateIps.contains("192.168.107.1")) candidateIps.add("192.168.107.1");
-                if (!candidateIps.contains("192.168.49.1")) candidateIps.add("192.168.49.1");
+                List<String> discovered = NetworkManager.getCandidateCameraIps(appContext);
+                for (String ip : discovered) {
+                    if (!candidateIps.contains(ip)) candidateIps.add(ip);
+                }
 
-                final ExecutorService probePool = Executors.newFixedThreadPool(4);
-                final long deadline = System.currentTimeMillis() + 18000;
+                // Known Samsung MediaServer ports
+                final int[] candidatePorts = (customPort > 0) ? new int[]{customPort} :
+                        new int[]{52235, 7676, 80};
 
-                // Background SSDP discovery thread
+                final long deadline = System.currentTimeMillis() + 15000;
+
+                // 1. Background SSDP discovery thread
                 Thread ssdpThread = new Thread(new Runnable() {
                     @Override
                     public void run() {
                         while (!resolved.get() && System.currentTimeMillis() < deadline) {
                             try {
-                                DeviceInfo dev = performSsdpSearch(1200, candidateIps);
+                                DeviceInfo dev = performSsdpSearch(1500, candidateIps);
                                 if (dev != null && resolved.compareAndSet(false, true)) {
                                     foundDevice[0] = dev;
                                     break;
                                 }
                             } catch (Exception ignored) {}
-                            try { Thread.sleep(200); } catch (InterruptedException ie) { break; }
+                            try { Thread.sleep(250); } catch (InterruptedException ie) { break; }
                         }
                     }
                 }, "MobileLink-SSDP-Search");
                 ssdpThread.start();
 
-                // Direct HTTP Probing loop across candidate ports
+                // 2. Direct HTTP Probing on primary Samsung MediaServer ports
                 while (!resolved.get() && System.currentTimeMillis() < deadline) {
-                    final CountDownLatch roundLatch = new CountDownLatch(candidateIps.size() * candidatePorts.length);
-                    for (final String ip : candidateIps) {
+                    for (String ip : candidateIps) {
                         if (resolved.get()) break;
-                        for (final int p : candidatePorts) {
+                        for (int p : candidatePorts) {
                             if (resolved.get()) break;
-                            probePool.execute(new Runnable() {
-                                @Override
-                                public void run() {
-                                    try {
-                                        if (!resolved.get()) {
-                                            DeviceInfo dev = probeHttpEndpoint(ip, p);
-                                            if (dev != null && resolved.compareAndSet(false, true)) {
-                                                foundDevice[0] = dev;
-                                            }
-                                        }
-                                    } finally {
-                                        roundLatch.countDown();
-                                    }
+                            if (isPortOpen(ip, p, 400)) {
+                                Log.i(TAG, "Port " + p + " is open on " + ip + "! Probing description XML...");
+                                DeviceInfo dev = probeHttpEndpoint(ip, p);
+                                if (dev != null && resolved.compareAndSet(false, true)) {
+                                    foundDevice[0] = dev;
+                                    break;
                                 }
-                            });
+                            }
                         }
                     }
-
-                    try {
-                        roundLatch.await(1500, TimeUnit.MILLISECONDS);
-                    } catch (InterruptedException ignored) {}
-
                     if (resolved.get()) break;
-                    try { Thread.sleep(300); } catch (InterruptedException ignored) { break; }
+                    try { Thread.sleep(400); } catch (InterruptedException ignored) { break; }
                 }
 
-                probePool.shutdownNow();
                 ssdpThread.interrupt();
 
-                if (multicastLock != null && multicastLock.isHeld()) {
-                    try { multicastLock.release(); } catch (Exception ignored) {}
-                }
-
                 if (foundDevice[0] != null) {
+                    activeDevice = foundDevice[0];
                     callback.onDeviceFound(foundDevice[0]);
                 } else {
-                    callback.onDiscoveryFailed("לא נמצאה מצלמה במצב MobileLink. ודא שהטלפון מחובר ל-Wi-Fi של המצלמה, ובמידה והמצלמה מציגה 'לאשר חיבור לסמארטפון?' לחץ 'כן' במצלמה.");
+                    callback.onDiscoveryFailed("Camera not found in MobileLink mode. Ensure phone Wi-Fi is connected to camera, and if the camera prompts 'Allow connection from smartphone?', press 'Yes' on the camera.");
                 }
             }
         }).start();
@@ -312,8 +310,9 @@ public class MobileLinkClient {
         DatagramSocket socket = null;
         try {
             socket = new DatagramSocket();
-            if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                try { activeWifiNetwork.bindSocket(socket); } catch (Exception ignored) {}
+            Network net = NetworkManager.getActiveWifiNetwork();
+            if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                try { net.bindSocket(socket); } catch (Exception ignored) {}
             }
             socket.setSoTimeout(timeoutMs);
 
@@ -390,10 +389,11 @@ public class MobileLinkClient {
         try {
             URL url = new URL(locationUrl);
             HttpURLConnection conn = openConnection(url);
-            conn.setConnectTimeout(600);
-            conn.setReadTimeout(1200);
+            conn.setConnectTimeout(2500);
+            conn.setReadTimeout(3000);
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", getUserAgent());
+            conn.setRequestProperty("Connection", "close");
 
             int code = conn.getResponseCode();
             if (code == 200) {
