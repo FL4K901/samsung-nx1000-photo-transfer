@@ -526,6 +526,7 @@ public class MainActivity extends Activity {
 
         if (isDownloading) return;
         isDownloading = true;
+        CameraClient.isDownloading.set(true);
 
         layoutDownloadProgress.setVisibility(View.VISIBLE);
         progressDownload.setMax(selected.size());
@@ -538,40 +539,44 @@ public class MainActivity extends Activity {
                 File targetDir = getDownloadDirectory();
                 int successCount = 0;
 
-                for (int i = 0; i < selected.size(); i++) {
-                    final int index = i;
-                    final PhotoItem item = selected.get(i);
+                try {
+                    for (int i = 0; i < selected.size(); i++) {
+                        final int index = i;
+                        final PhotoItem item = selected.get(i);
 
-                    mainHandler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            txtDownloadStatus.setText(String.format(getString(R.string.downloading_progress), (index + 1), selected.size()) + " (" + item.getTitle() + ")");
-                            item.setDownloadStatus(PhotoItem.STATUS_DOWNLOADING);
-                            photoAdapter.notifyDataSetChanged();
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                txtDownloadStatus.setText(String.format(getString(R.string.downloading_progress), (index + 1), selected.size()) + " (" + item.getTitle() + ")");
+                                item.setDownloadStatus(PhotoItem.STATUS_DOWNLOADING);
+                                photoAdapter.notifyDataSetChanged();
+                            }
+                        });
+
+                        try {
+                            CameraClient.downloadPhoto(MainActivity.this, item, targetDir, null);
+                            item.setDownloadStatus(PhotoItem.STATUS_COMPLETED);
+                            successCount++;
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error downloading " + item.getTitle(), e);
+                            item.setDownloadStatus(PhotoItem.STATUS_ERROR);
                         }
-                    });
 
-                    try {
-                        CameraClient.downloadPhoto(MainActivity.this, item, targetDir, null);
-                        item.setDownloadStatus(PhotoItem.STATUS_COMPLETED);
-                        successCount++;
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error downloading " + item.getTitle(), e);
-                        item.setDownloadStatus(PhotoItem.STATUS_ERROR);
+                        // Flush delay: give camera storage and TCP stack 400ms to close socket cleanly
+                        try {
+                            Thread.sleep(400);
+                        } catch (InterruptedException ignored) {}
+
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                progressDownload.setProgress(index + 1);
+                                photoAdapter.notifyDataSetChanged();
+                            }
+                        });
                     }
-
-                    // Flush delay: give camera storage and TCP stack 250ms to close socket cleanly
-                    try {
-                        Thread.sleep(250);
-                    } catch (InterruptedException ignored) {}
-
-                    mainHandler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            progressDownload.setProgress(index + 1);
-                            photoAdapter.notifyDataSetChanged();
-                        }
-                    });
+                } finally {
+                    CameraClient.isDownloading.set(false);
                 }
 
                 final int finalSuccess = successCount;

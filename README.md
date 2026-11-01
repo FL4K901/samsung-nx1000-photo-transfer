@@ -1,9 +1,9 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.3.0-blue.svg)](release/NX-MobileLink-v1.3.0.apk)
+[![Release](https://img.shields.io/badge/Release-v1.3.1-blue.svg)](release/NX-MobileLink-v1.3.1.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
-[![APK Size](https://img.shields.io/badge/APK%20Size-80%20KB-success.svg)](release/NX-MobileLink-v1.3.0.apk)
+[![APK Size](https://img.shields.io/badge/APK%20Size-80%20KB-success.svg)](release/NX-MobileLink-v1.3.1.apk)
 
 Modern, open-source Android application for wireless photo and video transfer from **Samsung NX1000** (and compatible Samsung NX series cameras) to modern Android smartphones running **Android 7.0 through Android 14+**.
 
@@ -38,7 +38,7 @@ This project is a clean-room, reverse-engineered native Android solution that co
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.3.0.apk](release/NX-MobileLink-v1.3.0.apk)**
+👉 **[Download NX-MobileLink-v1.3.1.apk](release/NX-MobileLink-v1.3.1.apk)**
 
 1. Transfer or download the APK to your Android device.
 2. Open the file and allow "Install from Unknown Sources" if prompted.
@@ -108,6 +108,11 @@ The output APK will be generated, zip-aligned, and signed with both v1 and v2 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.3.1
+* **Download Traffic Isolation**: Pauses all background TCP keepalive pings during active photo/video downloads, eliminating TCP socket congestion on the camera's embedded web server and preventing unexpected "Network disconnected" errors during multi-file batch transfers.
+* **Batch Transfer State Management**: Added global atomic download lock spanning multi-photo batch queues with 400ms buffer flush delays between downloads.
+* **Lightweight Periodic Heartbeat**: Optimized idle keepalive to a single lightweight Mode Control ping every 8 seconds alongside UDP SSDP beacons.
 
 ### Version 1.3.0
 * **Remote Viewfinder Mode Control**: Implemented port 7788 TCP/UDP Mode Control handshake (`/mode/control`), port 7679 stream touch (`/livestream.avi`), and dual-port reciprocal callback server (ports 7788 & 7792) so physical camera LCD displays "Connected" and resets the auto-off timer.

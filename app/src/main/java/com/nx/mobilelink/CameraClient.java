@@ -710,8 +710,8 @@ public class CameraClient {
     }
 
     /**
-     * Sends Samsung proprietary Mode Control handshake to port 7788 (TCP + UDP)
-     * and port 7679/80, registering the phone's MAC, IP, and listening callback port.
+     * Sends Samsung proprietary Mode Control handshake to port 7788 (TCP + UDP),
+     * registering the phone's MAC, IP, and listening callback port.
      * This signals the camera physical firmware to acknowledge "Connected" on its LCD
      * and suppresses the auto-power-off timer in Remote Viewfinder and MobileLink modes.
      */
@@ -724,57 +724,22 @@ public class CameraClient {
 
             String baseUa = getUserAgent(); // "SEC_DSC_485D60..."
             String rawMac = baseUa.replace("SEC_DSC_", "");
-            String colonMac = formatMacWithColons(rawMac);
 
             String ipToUse = (localIp != null && !localIp.isEmpty()) ? localIp : "192.168.107.2";
             int portToUse = (localPort > 0) ? localPort : 7788;
 
-            // Variations of User-Agent recognized across Samsung camera firmware
-            String[] userAgents = new String[]{
-                    "SEC_MODE_" + rawMac,
-                    "SEC_RVF_" + rawMac,
-                    "SEC_RVF_" + rawMac + "_",
-                    "SEC_RVF_ML_" + rawMac,
-                    "SEC_MODE_" + colonMac,
-                    "SEC_RVF_" + colonMac,
-                    "SEC_DSC_" + rawMac
-            };
-
-            int[] targetPorts = (camPort != 80 && camPort != 7679 && camPort != 7788) ?
-                    new int[]{7788, 7679, 80, camPort} : new int[]{7788, 7679, 80};
-
-            // 1. TCP Handshake on Mode Control & RVF ports
-            for (int port : targetPorts) {
-                for (String ua : userAgents) {
-                    try {
-                        String req1 = "GET /mode/control HTTP/1.0\r\n" +
-                                "HOST: " + host + ":" + port + "\r\n" +
-                                "User-Agent: " + ua + "\r\n" +
-                                "Access-Method: manual\r\n" +
-                                "NTS: alive\r\n" +
-                                "Content-Length: 0\r\n" +
-                                "HOST-Mac: " + rawMac + "\r\n" +
-                                "HOST-Address: " + ipToUse + "\r\n" +
-                                "HOST-port: " + portToUse + "\r\n" +
-                                "Connection: close\r\n\r\n";
-                        sendRawHttpRequest(host, port, req1);
-
-                        // Alternative format with http:// prefix in HOST header as parsed by some firmware
-                        String req2 = "GET /mode/control HTTP/1.0\r\n" +
-                                "HOST: http://" + host + ":" + port + "\r\n" +
-                                "User-Agent: " + ua + "\r\n" +
-                                "Access-Method: manual\r\n" +
-                                "NTS: alive\r\n" +
-                                "Content-Length: 0\r\n" +
-                                "HOST-Mac: " + colonMac + "\r\n" +
-                                "HOST-Address: " + ipToUse + "\r\n" +
-                                "HOST-port: " + portToUse + "\r\n" +
-                                "Connection: close\r\n\r\n";
-                        sendRawHttpRequest(host, port, req2);
-                        break; // one effective packet per target port is sufficient
-                    } catch (Exception ignored) {}
-                }
-            }
+            // 1. Single clean TCP Handshake on Mode Control port 7788
+            String req7788 = "GET /mode/control HTTP/1.0\r\n" +
+                    "HOST: " + host + ":7788\r\n" +
+                    "User-Agent: SEC_MODE_" + rawMac + "\r\n" +
+                    "Access-Method: manual\r\n" +
+                    "NTS: alive\r\n" +
+                    "Content-Length: 0\r\n" +
+                    "HOST-Mac: " + rawMac + "\r\n" +
+                    "HOST-Address: " + ipToUse + "\r\n" +
+                    "HOST-port: " + portToUse + "\r\n" +
+                    "Connection: close\r\n\r\n";
+            sendRawHttpRequest(host, 7788, req7788);
 
             // 2. UDP Datagram to port 7788 (unicast to camera and multicast)
             try {
@@ -782,90 +747,92 @@ public class CameraClient {
                 if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
                     try { activeWifiNetwork.bindSocket(udpSock); } catch (Exception ignored) {}
                 }
-                udpSock.setSoTimeout(400);
+                udpSock.setSoTimeout(300);
+                byte[] udpBytes = req7788.getBytes(StandardCharsets.UTF_8);
+                udpSock.send(new DatagramPacket(udpBytes, udpBytes.length, InetAddress.getByName(host), 7788));
+                udpSock.send(new DatagramPacket(udpBytes, udpBytes.length, InetAddress.getByName("239.255.255.250"), 7788));
+                udpSock.close();
+            } catch (Exception ignored) {}
 
-                String udpPayload = "GET /mode/control HTTP/1.0\r\n" +
-                        "HOST: " + host + ":7788\r\n" +
+            // 3. If cameraPort is different, send handshake there too
+            if (camPort != 80 && camPort != 7788 && camPort != 7679) {
+                String reqCam = "GET /mode/control HTTP/1.0\r\n" +
+                        "HOST: " + host + ":" + camPort + "\r\n" +
                         "User-Agent: SEC_MODE_" + rawMac + "\r\n" +
                         "Access-Method: manual\r\n" +
                         "NTS: alive\r\n" +
                         "Content-Length: 0\r\n" +
                         "HOST-Mac: " + rawMac + "\r\n" +
                         "HOST-Address: " + ipToUse + "\r\n" +
-                        "HOST-port: " + portToUse + "\r\n\r\n";
-                byte[] udpBytes = udpPayload.getBytes(StandardCharsets.UTF_8);
-
-                DatagramPacket unicastPkt = new DatagramPacket(udpBytes, udpBytes.length, InetAddress.getByName(host), 7788);
-                udpSock.send(unicastPkt);
-
-                DatagramPacket mcastPkt = new DatagramPacket(udpBytes, udpBytes.length, InetAddress.getByName("239.255.255.250"), 7788);
-                udpSock.send(mcastPkt);
-
-                udpSock.close();
-            } catch (Exception ignored) {}
-
+                        "HOST-port: " + portToUse + "\r\n" +
+                        "Connection: close\r\n\r\n";
+                sendRawHttpRequest(host, camPort, reqCam);
+            }
         } catch (Exception e) {
             Log.w(TAG, "sendModeControlHandshake error: " + e.getMessage());
         }
     }
 
-    /** Sends Remote Viewfinder handshake to /mode/control, /smp_2, /smp_3, /smp_4 and live stream endpoints so camera physical screen acknowledges connection */
+    /** Sends a single lightweight Mode Control keepalive packet to port 7788 */
+    private static void sendModeControlPing(DeviceInfo device, String localIp, int localPort) {
+        if (device == null || device.baseUrl == null) return;
+        try {
+            URL u = new URL(device.baseUrl);
+            String host = u.getHost();
+            String baseUa = getUserAgent();
+            String rawMac = baseUa.replace("SEC_DSC_", "");
+            String ipToUse = (localIp != null && !localIp.isEmpty()) ? localIp : "192.168.107.2";
+            int portToUse = (localPort > 0) ? localPort : 7788;
+
+            String req = "GET /mode/control HTTP/1.0\r\n" +
+                    "HOST: " + host + ":7788\r\n" +
+                    "User-Agent: SEC_MODE_" + rawMac + "\r\n" +
+                    "Access-Method: manual\r\n" +
+                    "NTS: alive\r\n" +
+                    "Content-Length: 0\r\n" +
+                    "HOST-Mac: " + rawMac + "\r\n" +
+                    "HOST-Address: " + ipToUse + "\r\n" +
+                    "HOST-port: " + portToUse + "\r\n" +
+                    "Connection: close\r\n\r\n";
+            sendRawHttpRequest(host, 7788, req);
+        } catch (Exception ignored) {}
+    }
+
+    /** Sends Remote Viewfinder initial handshake to /smp_2_, /smp_3_ and port 7679 so camera physical screen acknowledges connection */
     private static void sendRvfHandshake(DeviceInfo device) {
         if (device == null || device.baseUrl == null) return;
         try {
             URL u = new URL(device.baseUrl);
             String host = u.getHost();
-            int cameraPort = u.getPort() != -1 ? u.getPort() : 80;
 
-            String rvfUa1 = getRvfUserAgent();
-            String rawMac = rvfUa1.replace("SEC_RVF_", "");
-            String rvfUa2 = "SEC_RVF_" + formatMacWithColons(rawMac);
-            String rvfUa3 = "SEC_RVF_" + rawMac + "_";
-
-            String[] uas = new String[]{rvfUa1, rvfUa2, rvfUa3};
-            String[] rvfPaths = new String[]{"/smp_2", "/smp_3", "/smp_4", "/smp_2_", "/smp_3_", "/smp_4_"};
-            int[] testPorts = (cameraPort != 80 && cameraPort != 7679 && cameraPort != 7788) ?
-                    new int[]{cameraPort, 7679, 7788, 80} : new int[]{cameraPort, 7679, 7788, 80};
-
+            String rvfUa = getRvfUserAgent();
+            String rawMac = rvfUa.replace("SEC_RVF_", "");
             String localIp = (appContext != null) ? getLocalIpAddress(appContext) : "192.168.107.2";
             int localPort = (localEventServer != null) ? localEventServer.getPort() : 7788;
 
-            for (int p : testPorts) {
-                for (String path : rvfPaths) {
-                    for (String ua : uas) {
-                        try {
-                            String req = "GET " + path + " HTTP/1.0\r\n" +
-                                    "HOST: " + host + ":" + p + "\r\n" +
-                                    "User-Agent: " + ua + "\r\n" +
-                                    "Access-Method: manual\r\n" +
-                                    "HOST-Mac: " + rawMac + "\r\n" +
-                                    "HOST-Address: " + localIp + "\r\n" +
-                                    "HOST-port: " + localPort + "\r\n" +
-                                    "Connection: close\r\n\r\n";
-                            sendRawHttpRequest(host, p, req);
-                        } catch (Exception ignored) {}
-                    }
-                }
-            }
+            int targetPort = 7679;
+            String req2 = "GET /smp_2_ HTTP/1.0\r\n" +
+                    "HOST: " + host + ":" + targetPort + "\r\n" +
+                    "User-Agent: " + rvfUa + "\r\n" +
+                    "Access-Method: manual\r\n" +
+                    "HOST-Mac: " + rawMac + "\r\n" +
+                    "HOST-Address: " + localIp + "\r\n" +
+                    "HOST-port: " + localPort + "\r\n" +
+                    "Connection: close\r\n\r\n";
+            sendRawHttpRequest(host, targetPort, req2);
 
-            // Stream touches on port 7679 to activate the viewfinder streaming engine
-            sendStreamTouch(host, 7679, "/livestream.avi", rvfUa1);
-            sendStreamTouch(host, 7679, "/qvga_livestream.avi", rvfUa1);
+            String req3 = "GET /smp_3_ HTTP/1.0\r\n" +
+                    "HOST: " + host + ":" + targetPort + "\r\n" +
+                    "User-Agent: " + rvfUa + "\r\n" +
+                    "Access-Method: manual\r\n" +
+                    "Connection: close\r\n\r\n";
+            sendRawHttpRequest(host, targetPort, req3);
 
-            // SOAP GetInformation / GetInfomation probes
-            sendSoapGetInformation(host, 7679, "/smp_2_", rvfUa1);
-            if (device.controlUrl != null) {
-                try {
-                    URL cu = new URL(device.controlUrl);
-                    sendSoapGetInformation(cu.getHost(), (cu.getPort() != -1 ? cu.getPort() : 80), cu.getFile(), rvfUa1);
-                } catch (Exception ignored) {}
-            }
+            // Touch live view streams on port 7679 to activate the viewfinder streaming engine
+            sendStreamTouch(host, 7679, "/livestream.avi", rvfUa);
 
             // Also send RTSP ping on port 554
-            sendRtspPing(host, 554, rvfUa1);
-
-            // Also send TCP ping to ports 50000, 50001, 50002
-            sendTcpPings(host, new int[]{50000, 50001, 50002});
+            sendRtspPing(host, 554, rvfUa);
         } catch (Exception e) {
             Log.w(TAG, "sendRvfHandshake error: " + e.getMessage());
         }
@@ -996,8 +963,7 @@ public class CameraClient {
         final String localIp = getLocalIpAddress(context);
         Log.i(TAG, "LocalEventServer active on " + localIp + ":" + localPort);
 
-        // 1. Handshake & initial UPnP Event Subscriptions:
-        //    Request device description with SEC_DSC_* User-Agent, Mode Control, RVF handshake, UDP pings, and UPnP subscription
+        // 1. Initial Handshake & UPnP Event Subscriptions (runs ONCE in background):
         Executors.newSingleThreadExecutor().execute(new Runnable() {
             @Override
             public void run() {
@@ -1011,7 +977,7 @@ public class CameraClient {
 
         // 2. Heartbeat: the original app sends "M-SEARCH ssdp:all" every second for as long
         //    as it is open (MyControlPoint$1.run). The camera treats these as "phone alive".
-        //    It keeps running during downloads too (it is UDP and does not disturb HTTP).
+        //    It keeps running during downloads too (it is purely UDP and does not disturb HTTP).
         ssdpThread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -1021,30 +987,30 @@ public class CameraClient {
         ssdpThread.setDaemon(true);
         ssdpThread.start();
 
-        // 3. Periodic refresh of UPnP subscriptions, RVF/MobileLink handshakes and browse ping every 2.5 seconds
+        // 3. Periodic lightweight keepalive every 8 seconds (ONLY when NOT downloading):
         keepAliveExecutor = Executors.newSingleThreadScheduledExecutor();
         keepAliveExecutor.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
                 try {
+                    // CRITICAL: NEVER send TCP packets to camera while a photo download is active!
+                    // The active download already keeps the connection alive. Sending parallel TCP
+                    // requests crashes the camera's embedded web server and drops the Wi-Fi link.
+                    if (isDownloading.get()) return;
+
                     if (activeDevice != null) {
                         String currentIp = getLocalIpAddress(appContext);
                         String ipToUse = (currentIp != null && !currentIp.isEmpty()) ? currentIp : localIp;
-                        sendModeControlHandshake(activeDevice, ipToUse, localPort);
-                        subscribeAllServices(activeDevice, ipToUse, localPort);
-                        sendRvfHandshake(activeDevice);
+                        sendModeControlPing(activeDevice, ipToUse, localPort);
                         sendUdpPings(activeDevice);
-
-                        if (!isDownloading.get()) {
-                            sendDescriptionHandshake(activeDevice);
-                            sendBrowseHeartbeatPing(activeDevice);
-                        }
+                        sendDescriptionHandshake(activeDevice);
+                        sendBrowseHeartbeatPing(activeDevice);
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "Keepalive tick warning: " + e.getMessage());
                 }
             }
-        }, 1200, 2500, TimeUnit.MILLISECONDS);
+        }, 3000, 8000, TimeUnit.MILLISECONDS);
     }
 
     public static synchronized void stopKeepAlive() {
@@ -1901,7 +1867,7 @@ public class CameraClient {
     }
 
     public static void downloadPhoto(Context context, PhotoItem item, File targetDir, DownloadProgressListener listener) throws Exception {
-        isDownloading.set(true);
+        boolean wasDownloading = isDownloading.getAndSet(true);
         try {
             String fileName = item.getTitle();
             if (fileName == null || fileName.isEmpty()) {
@@ -2002,7 +1968,9 @@ public class CameraClient {
                 }
             }
         } finally {
-            isDownloading.set(false);
+            if (!wasDownloading) {
+                isDownloading.set(false);
+            }
         }
     }
 
