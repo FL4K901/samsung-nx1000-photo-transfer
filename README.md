@@ -1,9 +1,9 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.2.0-blue.svg)](release/NX-MobileLink-v1.2.0.apk)
+[![Release](https://img.shields.io/badge/Release-v1.3.0-blue.svg)](release/NX-MobileLink-v1.3.0.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
-[![APK Size](https://img.shields.io/badge/APK%20Size-75%20KB-success.svg)](release/NX-MobileLink-v1.2.0.apk)
+[![APK Size](https://img.shields.io/badge/APK%20Size-80%20KB-success.svg)](release/NX-MobileLink-v1.3.0.apk)
 
 Modern, open-source Android application for wireless photo and video transfer from **Samsung NX1000** (and compatible Samsung NX series cameras) to modern Android smartphones running **Android 7.0 through Android 14+**.
 
@@ -26,11 +26,11 @@ This project is a clean-room, reverse-engineered native Android solution that co
 - **Apple-Inspired Dark Mode UI**: Clean, modern dark aesthetic featuring dynamic status capsules, frosted glass cards, and a custom copyright-free camera lens icon.
 - **Deep Recursive Folder Browsing (BFS)**: Traverses multi-level SD card storage directories (`0` ➔ `Storage` ➔ `DCIM` ➔ `100_PHOTO`) so no photos are ever missed.
 - **Dual Camera Mode Support**:
-  - **MobileLink Mode**: The standard photo sharing mode on Samsung NX cameras.
-  - **Remote Viewfinder Mode**: Automatic RVF handshake (`SEC_RVF_*`) and RTSP keepalive for seamless pairing.
-- **Anti-Timeout Keepalive Engine**: Periodic SSDP heartbeat, raw HTTP description pings, and UPnP event subscriptions every 3 seconds to keep the camera's Wi-Fi radio from shutting off.
+  - **MobileLink Mode**: The standard photo sharing mode on Samsung NX cameras with automated retry polling while approving on the camera LCD.
+  - **Remote Viewfinder Mode**: Full Mode Control daemon integration (port 7788/7679) with reciprocal event callback server and live stream activation, acknowledging connection on the physical camera screen and suppressing the auto-power-off timer.
+- **Anti-Timeout Keepalive Engine**: Periodic SSDP heartbeat, Mode Control registration (`NTS: alive`), raw HTTP description pings, and UPnP event subscriptions every 2.5 seconds to keep the camera's Wi-Fi radio from shutting off.
 - **Batch & Single Downloads**: Select individual photos or "Select All" with one tap, saving directly to the Android MediaStore / Gallery with instant thumbnail indexing.
-- **Ultra-Lightweight & Native**: Zero bloated third-party dependencies, built entirely using native Android APIs. The compiled, signed APK is only **~75 KB**!
+- **Ultra-Lightweight & Native**: Zero bloated third-party dependencies, built entirely using native Android APIs. The compiled, signed APK is only **~80 KB**!
 
 ---
 
@@ -38,7 +38,7 @@ This project is a clean-room, reverse-engineered native Android solution that co
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.2.0.apk](release/NX-MobileLink-v1.2.0.apk)**
+👉 **[Download NX-MobileLink-v1.3.0.apk](release/NX-MobileLink-v1.3.0.apk)**
 
 1. Transfer or download the APK to your Android device.
 2. Open the file and allow "Install from Unknown Sources" if prompted.
@@ -61,7 +61,7 @@ You can download the pre-built, signed APK directly from this repository:
 1. Turn the mode dial to **Wi-Fi** and select **Remote Viewfinder**.
 2. Connect your phone to the camera's Wi-Fi.
 3. Open **NX Cam Link** and tap **"סרוק וחבר מצלמה"**.
-4. The app sends the required Remote Viewfinder pairing handshake and periodic keepalives, keeping the connection stable while you browse and download photos.
+4. The app sends the Samsung Mode Control (`/mode/control`) handshake on port 7788 and activates the live stream (`/livestream.avi` on port 7679), while running a reciprocal callback server on port 7788/7792. The camera LCD screen immediately acknowledges the connection and cancels the standby power-off timer.
 
 ---
 
@@ -72,7 +72,7 @@ Requires Android SDK build-tools and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.2.0.apk`.
+The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.3.0.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -84,8 +84,22 @@ The output APK will be generated, zip-aligned, and signed with both v1 and v2 si
 
 ## 🔬 Protocol Reverse-Engineering Details
 
-- **Device Discovery**: The app sends UDP `M-SEARCH * HTTP/1.1` to `239.255.255.250:1900` searching for `urn:schemas-upnp-org:device:MediaServer:1` and probes candidate gateway ports (52235, 7676, 4004, 8080).
-- **Client Identity**: The camera firmware expects specific User-Agent headers to acknowledge phone clients:
+- **Device Discovery**: The app sends UDP `M-SEARCH * HTTP/1.1` to `239.255.255.250:1900` searching for `urn:schemas-upnp-org:device:MediaServer:1` and probes candidate gateway ports (52235, 7676, 7679, 7788, 4004, 8080).
+- **Samsung Mode Control Handshake (Port 7788 & 7679)**:
+  ```http
+  GET /mode/control HTTP/1.0
+  HOST: 192.168.107.1:7788
+  User-Agent: SEC_MODE_<MAC>
+  Access-Method: manual
+  NTS: alive
+  Content-Length: 0
+  HOST-Mac: <MAC>
+  HOST-Address: <PHONE_IP>
+  HOST-port: 7788
+  Connection: close
+  ```
+- **Reciprocal Callback Server**: Runs a local server on port 7788 (and port 7792) returning `HTTP/1.1 200 OK` to acknowledge `/eventCallback` and `/mode/control` incoming queries from the camera.
+- **Client Identity**:
   - MobileLink: `User-Agent: SEC_DSC_<PHONE_HEX_MAC>`
   - Remote Viewfinder: `User-Agent: SEC_RVF_<PHONE_HEX_MAC>`
 - **Browsing Service**: Communicates with the UPnP `ContentDirectory:1` service using SOAP `Browse` actions with chunk sizes of 20–25 items to prevent buffer overruns on the camera's embedded VxWorks HTTP server.
@@ -94,6 +108,11 @@ The output APK will be generated, zip-aligned, and signed with both v1 and v2 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.3.0
+* **Remote Viewfinder Mode Control**: Implemented port 7788 TCP/UDP Mode Control handshake (`/mode/control`), port 7679 stream touch (`/livestream.avi`), and dual-port reciprocal callback server (ports 7788 & 7792) so physical camera LCD displays "Connected" and resets the auto-off timer.
+* **MobileLink Approval Auto-Retry**: Added 5-stage polling retry with delay to automatically detect and load photos as soon as the user approves the connection on the camera LCD.
+* **Proactive Discovery Probes**: Sends Mode Control handshakes immediately during initial discovery scans.
 
 ### Version 1.2.0
 * **Multi-level BFS directory traversal**: Recursively discovers sub-folders (`DCIM`, `100_PHOTO`) on SD card storage.

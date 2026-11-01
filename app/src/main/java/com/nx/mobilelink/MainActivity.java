@@ -410,7 +410,27 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 try {
-                    final List<PhotoItem> loaded = CameraClient.browsePhotos(device);
+                    List<PhotoItem> loaded = null;
+                    for (int attempt = 1; attempt <= 5; attempt++) {
+                        try {
+                            loaded = CameraClient.browsePhotos(device);
+                            if (loaded != null && !loaded.isEmpty()) {
+                                break;
+                            }
+                        } catch (Exception be) {
+                            Log.w(TAG, "Browse attempt " + attempt + " error: " + be.getMessage());
+                        }
+                        if (attempt < 5) {
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    txtStatusBadge.setText("ממתין לתמונות... (ודא אישור במצלמה)");
+                                }
+                            });
+                            try { Thread.sleep(1500); } catch (InterruptedException ignored) { break; }
+                        }
+                    }
+                    final List<PhotoItem> finalLoaded = loaded;
                     mainHandler.post(new Runnable() {
                         @Override
                         public void run() {
@@ -419,8 +439,8 @@ public class MainActivity extends Activity {
                             btnScanCamera.setEnabled(true);
 
                             photoList.clear();
-                            if (loaded != null && !loaded.isEmpty()) {
-                                photoList.addAll(loaded);
+                            if (finalLoaded != null && !finalLoaded.isEmpty()) {
+                                photoList.addAll(finalLoaded);
                                 scrollEmptyInstructions.setVisibility(View.GONE);
                                 gridPhotos.setVisibility(View.VISIBLE);
                                 layoutBatchControls.setVisibility(View.VISIBLE);
@@ -428,7 +448,7 @@ public class MainActivity extends Activity {
                                 txtSelectionCount.setText("0 מתוך " + photoList.size() + " נבחרו");
                                 Toast.makeText(MainActivity.this, "נטענו " + photoList.size() + " תמונות וסרטונים", Toast.LENGTH_SHORT).show();
                             } else {
-                                Toast.makeText(MainActivity.this, "לא נמצאו תמונות בכרטיס הזיכרון של המצלמה", Toast.LENGTH_LONG).show();
+                                Toast.makeText(MainActivity.this, "לא נמצאו תמונות בכרטיס הזיכרון של המצלמה. אם המצלמה שואלת, לחץ 'כן' לאישור", Toast.LENGTH_LONG).show();
                             }
                         }
                     });

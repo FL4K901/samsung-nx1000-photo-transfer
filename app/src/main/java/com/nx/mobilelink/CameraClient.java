@@ -231,9 +231,9 @@ public class CameraClient {
                 final DeviceInfo[] foundDevice = new DeviceInfo[1];
                 final AtomicBoolean resolved = new AtomicBoolean(false);
 
-                // Candidate ports for NX series cameras (52235=standard NX, 7676=Samsung smart, 4004=Cybergarage UPnP)
+                // Candidate ports for NX series cameras (52235=standard NX, 7676=Samsung smart, 7679=RVF, 7788=Mode Control)
                 final int[] candidatePorts = (customPort > 0) ? new int[]{customPort} :
-                        new int[]{52235, 7676, 4004, 8080, 50000, 80, 8000, 49152, 49153, 49154, 38400, 55555};
+                        new int[]{52235, 7676, 7679, 7788, 4004, 8080, 50000, 80, 8000, 49152, 49153, 49154, 38400, 55555};
 
                 final String gatewayIp = getWifiGatewayIp(context);
                 final String localIp = getLocalIpAddress(context);
@@ -248,6 +248,20 @@ public class CameraClient {
                 if (localIp != null && localIp.contains(".")) {
                     String subnetBase = localIp.substring(0, localIp.lastIndexOf('.') + 1) + "1";
                     if (!candidateIps.contains(subnetBase)) candidateIps.add(subnetBase);
+                }
+
+                // Proactively start LocalEventServer so camera callback endpoints are live immediately
+                if (localEventServer == null) {
+                    localEventServer = new LocalEventServer();
+                }
+                final int localPort = localEventServer.start();
+                Log.i(TAG, "Discovery LocalEventServer active on " + localIp + ":" + localPort);
+
+                // Proactively send Samsung Mode Control handshake to candidate IPs to trigger screen update
+                for (String ip : candidateIps) {
+                    DeviceInfo probeDev = new DeviceInfo();
+                    probeDev.baseUrl = "http://" + ip + ":80";
+                    sendModeControlHandshake(probeDev, localIp, localPort);
                 }
 
                 final ExecutorService probePool = Executors.newFixedThreadPool(6);
@@ -695,7 +709,107 @@ public class CameraClient {
         return sb.toString();
     }
 
-    /** Sends Remote Viewfinder handshake to /smp_2, /smp_3, /smp_4 so camera physical screen acknowledges connection */
+    /**
+     * Sends Samsung proprietary Mode Control handshake to port 7788 (TCP + UDP)
+     * and port 7679/80, registering the phone's MAC, IP, and listening callback port.
+     * This signals the camera physical firmware to acknowledge "Connected" on its LCD
+     * and suppresses the auto-power-off timer in Remote Viewfinder and MobileLink modes.
+     */
+    public static void sendModeControlHandshake(DeviceInfo device, String localIp, int localPort) {
+        if (device == null || device.baseUrl == null) return;
+        try {
+            URL u = new URL(device.baseUrl);
+            final String host = u.getHost();
+            final int camPort = (u.getPort() != -1) ? u.getPort() : 80;
+
+            String baseUa = getUserAgent(); // "SEC_DSC_485D60..."
+            String rawMac = baseUa.replace("SEC_DSC_", "");
+            String colonMac = formatMacWithColons(rawMac);
+
+            String ipToUse = (localIp != null && !localIp.isEmpty()) ? localIp : "192.168.107.2";
+            int portToUse = (localPort > 0) ? localPort : 7788;
+
+            // Variations of User-Agent recognized across Samsung camera firmware
+            String[] userAgents = new String[]{
+                    "SEC_MODE_" + rawMac,
+                    "SEC_RVF_" + rawMac,
+                    "SEC_RVF_" + rawMac + "_",
+                    "SEC_RVF_ML_" + rawMac,
+                    "SEC_MODE_" + colonMac,
+                    "SEC_RVF_" + colonMac,
+                    "SEC_DSC_" + rawMac
+            };
+
+            int[] targetPorts = (camPort != 80 && camPort != 7679 && camPort != 7788) ?
+                    new int[]{7788, 7679, 80, camPort} : new int[]{7788, 7679, 80};
+
+            // 1. TCP Handshake on Mode Control & RVF ports
+            for (int port : targetPorts) {
+                for (String ua : userAgents) {
+                    try {
+                        String req1 = "GET /mode/control HTTP/1.0\r\n" +
+                                "HOST: " + host + ":" + port + "\r\n" +
+                                "User-Agent: " + ua + "\r\n" +
+                                "Access-Method: manual\r\n" +
+                                "NTS: alive\r\n" +
+                                "Content-Length: 0\r\n" +
+                                "HOST-Mac: " + rawMac + "\r\n" +
+                                "HOST-Address: " + ipToUse + "\r\n" +
+                                "HOST-port: " + portToUse + "\r\n" +
+                                "Connection: close\r\n\r\n";
+                        sendRawHttpRequest(host, port, req1);
+
+                        // Alternative format with http:// prefix in HOST header as parsed by some firmware
+                        String req2 = "GET /mode/control HTTP/1.0\r\n" +
+                                "HOST: http://" + host + ":" + port + "\r\n" +
+                                "User-Agent: " + ua + "\r\n" +
+                                "Access-Method: manual\r\n" +
+                                "NTS: alive\r\n" +
+                                "Content-Length: 0\r\n" +
+                                "HOST-Mac: " + colonMac + "\r\n" +
+                                "HOST-Address: " + ipToUse + "\r\n" +
+                                "HOST-port: " + portToUse + "\r\n" +
+                                "Connection: close\r\n\r\n";
+                        sendRawHttpRequest(host, port, req2);
+                        break; // one effective packet per target port is sufficient
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            // 2. UDP Datagram to port 7788 (unicast to camera and multicast)
+            try {
+                DatagramSocket udpSock = new DatagramSocket();
+                if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                    try { activeWifiNetwork.bindSocket(udpSock); } catch (Exception ignored) {}
+                }
+                udpSock.setSoTimeout(400);
+
+                String udpPayload = "GET /mode/control HTTP/1.0\r\n" +
+                        "HOST: " + host + ":7788\r\n" +
+                        "User-Agent: SEC_MODE_" + rawMac + "\r\n" +
+                        "Access-Method: manual\r\n" +
+                        "NTS: alive\r\n" +
+                        "Content-Length: 0\r\n" +
+                        "HOST-Mac: " + rawMac + "\r\n" +
+                        "HOST-Address: " + ipToUse + "\r\n" +
+                        "HOST-port: " + portToUse + "\r\n\r\n";
+                byte[] udpBytes = udpPayload.getBytes(StandardCharsets.UTF_8);
+
+                DatagramPacket unicastPkt = new DatagramPacket(udpBytes, udpBytes.length, InetAddress.getByName(host), 7788);
+                udpSock.send(unicastPkt);
+
+                DatagramPacket mcastPkt = new DatagramPacket(udpBytes, udpBytes.length, InetAddress.getByName("239.255.255.250"), 7788);
+                udpSock.send(mcastPkt);
+
+                udpSock.close();
+            } catch (Exception ignored) {}
+
+        } catch (Exception e) {
+            Log.w(TAG, "sendModeControlHandshake error: " + e.getMessage());
+        }
+    }
+
+    /** Sends Remote Viewfinder handshake to /mode/control, /smp_2, /smp_3, /smp_4 and live stream endpoints so camera physical screen acknowledges connection */
     private static void sendRvfHandshake(DeviceInfo device) {
         if (device == null || device.baseUrl == null) return;
         try {
@@ -710,26 +824,41 @@ public class CameraClient {
 
             String[] uas = new String[]{rvfUa1, rvfUa2, rvfUa3};
             String[] rvfPaths = new String[]{"/smp_2", "/smp_3", "/smp_4", "/smp_2_", "/smp_3_", "/smp_4_"};
-            int[] testPorts = (cameraPort != 80 && cameraPort != 7679) ?
-                    new int[]{cameraPort, 7679, 80} : new int[]{cameraPort, 80};
+            int[] testPorts = (cameraPort != 80 && cameraPort != 7679 && cameraPort != 7788) ?
+                    new int[]{cameraPort, 7679, 7788, 80} : new int[]{cameraPort, 7679, 7788, 80};
+
+            String localIp = (appContext != null) ? getLocalIpAddress(appContext) : "192.168.107.2";
+            int localPort = (localEventServer != null) ? localEventServer.getPort() : 7788;
 
             for (int p : testPorts) {
                 for (String path : rvfPaths) {
                     for (String ua : uas) {
                         try {
-                            URL reqUrl = new URL("http://" + host + ":" + p + path);
-                            HttpURLConnection conn = openConnection(reqUrl);
-                            conn.setRequestMethod("GET");
-                            conn.setConnectTimeout(600);
-                            conn.setReadTimeout(1000);
-                            conn.setRequestProperty("User-Agent", ua);
-                            conn.setRequestProperty("Connection", "close");
-                            int code = conn.getResponseCode();
-                            conn.disconnect();
-                            Log.d(TAG, "RVF Handshake (" + ua + ") -> " + reqUrl + " code: " + code);
+                            String req = "GET " + path + " HTTP/1.0\r\n" +
+                                    "HOST: " + host + ":" + p + "\r\n" +
+                                    "User-Agent: " + ua + "\r\n" +
+                                    "Access-Method: manual\r\n" +
+                                    "HOST-Mac: " + rawMac + "\r\n" +
+                                    "HOST-Address: " + localIp + "\r\n" +
+                                    "HOST-port: " + localPort + "\r\n" +
+                                    "Connection: close\r\n\r\n";
+                            sendRawHttpRequest(host, p, req);
                         } catch (Exception ignored) {}
                     }
                 }
+            }
+
+            // Stream touches on port 7679 to activate the viewfinder streaming engine
+            sendStreamTouch(host, 7679, "/livestream.avi", rvfUa1);
+            sendStreamTouch(host, 7679, "/qvga_livestream.avi", rvfUa1);
+
+            // SOAP GetInformation / GetInfomation probes
+            sendSoapGetInformation(host, 7679, "/smp_2_", rvfUa1);
+            if (device.controlUrl != null) {
+                try {
+                    URL cu = new URL(device.controlUrl);
+                    sendSoapGetInformation(cu.getHost(), (cu.getPort() != -1 ? cu.getPort() : 80), cu.getFile(), rvfUa1);
+                } catch (Exception ignored) {}
             }
 
             // Also send RTSP ping on port 554
@@ -740,6 +869,60 @@ public class CameraClient {
         } catch (Exception e) {
             Log.w(TAG, "sendRvfHandshake error: " + e.getMessage());
         }
+    }
+
+    private static void sendStreamTouch(String host, int port, String streamPath, String ua) {
+        Socket s = null;
+        try {
+            s = createSocket();
+            s.connect(new InetSocketAddress(host, port), 600);
+            s.setSoTimeout(1000);
+            OutputStream os = s.getOutputStream();
+            String req = "GET " + streamPath + " HTTP/1.0\r\n" +
+                    "HOST: " + host + ":" + port + "\r\n" +
+                    "User-Agent: " + ua + "\r\n" +
+                    "Access-Method: manual\r\n" +
+                    "Connection: close\r\n\r\n";
+            os.write(req.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+
+            InputStream in = s.getInputStream();
+            byte[] buf = new byte[512];
+            int read = in.read(buf);
+            Log.d(TAG, "sendStreamTouch (" + streamPath + ") response read: " + read + " bytes");
+        } catch (Exception ignored) {
+        } finally {
+            if (s != null) try { s.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private static void sendSoapGetInformation(String host, int port, String path, String ua) {
+        try {
+            String soap = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
+                    "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
+                    "  <s:Body>\r\n" +
+                    "    <u:GetInformation xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\"></u:GetInformation>\r\n" +
+                    "  </s:Body>\r\n" +
+                    "</s:Envelope>";
+            URL url = new URL("http://" + host + ":" + port + (path != null && !path.isEmpty() ? path : "/"));
+            HttpURLConnection conn = openConnection(url);
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(800);
+            conn.setReadTimeout(1200);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
+            conn.setRequestProperty("SOAPACTION", "\"urn:schemas-upnp-org:service:ContentDirectory:1#GetInformation\"");
+            conn.setRequestProperty("User-Agent", ua);
+            conn.setRequestProperty("Connection", "close");
+            byte[] b = soap.getBytes(StandardCharsets.UTF_8);
+            conn.setRequestProperty("Content-Length", String.valueOf(b.length));
+            OutputStream os = conn.getOutputStream();
+            os.write(b);
+            os.flush();
+            os.close();
+            conn.getResponseCode();
+            conn.disconnect();
+        } catch (Exception ignored) {}
     }
 
     private static Socket createSocket() {
@@ -807,17 +990,18 @@ public class CameraClient {
 
         Log.i(TAG, "Starting MobileLink session. Camera: " + device.baseUrl + " UA: " + getUserAgent());
 
-        // 0. Start LocalEventServer for UPnP NOTIFY callbacks
+        // 0. Start LocalEventServer for UPnP NOTIFY callbacks and Mode Control callbacks
         localEventServer = new LocalEventServer();
         final int localPort = localEventServer.start();
         final String localIp = getLocalIpAddress(context);
         Log.i(TAG, "LocalEventServer active on " + localIp + ":" + localPort);
 
         // 1. Handshake & initial UPnP Event Subscriptions:
-        //    Request device description with SEC_DSC_* User-Agent, RVF handshake, UDP pings, and UPnP subscription
+        //    Request device description with SEC_DSC_* User-Agent, Mode Control, RVF handshake, UDP pings, and UPnP subscription
         Executors.newSingleThreadExecutor().execute(new Runnable() {
             @Override
             public void run() {
+                sendModeControlHandshake(dev, localIp, localPort);
                 sendDescriptionHandshake(dev);
                 sendRvfHandshake(dev);
                 sendUdpPings(dev);
@@ -837,7 +1021,7 @@ public class CameraClient {
         ssdpThread.setDaemon(true);
         ssdpThread.start();
 
-        // 3. Periodic refresh of UPnP subscriptions, RVF/MobileLink handshakes and browse ping every 10 seconds
+        // 3. Periodic refresh of UPnP subscriptions, RVF/MobileLink handshakes and browse ping every 2.5 seconds
         keepAliveExecutor = Executors.newSingleThreadScheduledExecutor();
         keepAliveExecutor.scheduleWithFixedDelay(new Runnable() {
             @Override
@@ -846,6 +1030,7 @@ public class CameraClient {
                     if (activeDevice != null) {
                         String currentIp = getLocalIpAddress(appContext);
                         String ipToUse = (currentIp != null && !currentIp.isEmpty()) ? currentIp : localIp;
+                        sendModeControlHandshake(activeDevice, ipToUse, localPort);
                         subscribeAllServices(activeDevice, ipToUse, localPort);
                         sendRvfHandshake(activeDevice);
                         sendUdpPings(activeDevice);
@@ -859,7 +1044,7 @@ public class CameraClient {
                     Log.w(TAG, "Keepalive tick warning: " + e.getMessage());
                 }
             }
-        }, 1500, 3000, TimeUnit.MILLISECONDS);
+        }, 1200, 2500, TimeUnit.MILLISECONDS);
     }
 
     public static synchronized void stopKeepAlive() {
@@ -1212,66 +1397,125 @@ public class CameraClient {
         return null;
     }
 
-    // Lightweight Local Event Server for UPnP NOTIFY callbacks
+    // Samsung Mode Control & UPnP Event Callback Server
     private static class LocalEventServer {
-        private ServerSocket serverSocket;
-        private Thread serverThread;
+        private ServerSocket primarySocket;
+        private ServerSocket secondarySocket;
+        private Thread primaryThread;
+        private Thread secondaryThread;
         private volatile boolean running = false;
-        private int port = 0;
+        private int primaryPort = 7788;
+        private int secondaryPort = 7792;
 
         public synchronized int start() {
-            if (running && port > 0) return port;
+            if (running && primaryPort > 0) return primaryPort;
+            running = true;
+
+            // Attempt to bind primary to port 7788 (standard Samsung Smart Camera mode control port)
             try {
-                serverSocket = new ServerSocket();
-                serverSocket.setReuseAddress(true);
-                serverSocket.bind(new InetSocketAddress(0));
-                port = serverSocket.getLocalPort();
-                running = true;
-                serverThread = new Thread(new Runnable() {
+                primarySocket = new ServerSocket();
+                primarySocket.setReuseAddress(true);
+                primarySocket.bind(new InetSocketAddress(7788));
+                primaryPort = 7788;
+                Log.i(TAG, "LocalEventServer primary bound to port 7788");
+            } catch (Exception e1) {
+                Log.w(TAG, "Port 7788 unavailable, falling back to 7792: " + e1.getMessage());
+                try {
+                    primarySocket = new ServerSocket();
+                    primarySocket.setReuseAddress(true);
+                    primarySocket.bind(new InetSocketAddress(7792));
+                    primaryPort = 7792;
+                } catch (Exception e2) {
+                    try {
+                        primarySocket = new ServerSocket();
+                        primarySocket.setReuseAddress(true);
+                        primarySocket.bind(new InetSocketAddress(0));
+                        primaryPort = primarySocket.getLocalPort();
+                    } catch (Exception e3) {
+                        primaryPort = 8058;
+                    }
+                }
+            }
+
+            // If primary is 7788, also try to bind secondary to 7792 so both Samsung ports answer callbacks
+            if (primaryPort == 7788) {
+                try {
+                    secondarySocket = new ServerSocket();
+                    secondarySocket.setReuseAddress(true);
+                    secondarySocket.bind(new InetSocketAddress(7792));
+                    secondaryPort = 7792;
+                    Log.i(TAG, "LocalEventServer secondary bound to port 7792");
+                } catch (Exception ignored) {
+                    secondarySocket = null;
+                }
+            }
+
+            if (primarySocket != null) {
+                primaryThread = new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        while (running && serverSocket != null && !serverSocket.isClosed()) {
+                        while (running && primarySocket != null && !primarySocket.isClosed()) {
                             try {
-                                Socket client = serverSocket.accept();
-                                handleClient(client);
+                                Socket client = primarySocket.accept();
+                                handleClient(client, primaryPort);
                             } catch (Exception e) {
                                 if (!running) break;
                             }
                         }
                     }
-                }, "LocalEventServer");
-                serverThread.setDaemon(true);
-                serverThread.start();
-                Log.i(TAG, "LocalEventServer listening on port " + port);
-                return port;
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to start LocalEventServer", e);
-                return 8058;
+                }, "LocalEventServer-Primary");
+                primaryThread.setDaemon(true);
+                primaryThread.start();
             }
+
+            if (secondarySocket != null) {
+                secondaryThread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        while (running && secondarySocket != null && !secondarySocket.isClosed()) {
+                            try {
+                                Socket client = secondarySocket.accept();
+                                handleClient(client, secondaryPort);
+                            } catch (Exception e) {
+                                if (!running) break;
+                            }
+                        }
+                    }
+                }, "LocalEventServer-Secondary");
+                secondaryThread.setDaemon(true);
+                secondaryThread.start();
+            }
+
+            Log.i(TAG, "LocalEventServer active. Primary port: " + primaryPort + ", secondary port: " + (secondarySocket != null ? secondaryPort : "none"));
+            return primaryPort;
         }
 
         public synchronized int getPort() {
-            return (port > 0) ? port : 8058;
+            return (primaryPort > 0) ? primaryPort : 7788;
         }
 
-        private void handleClient(final Socket client) {
+        private void handleClient(final Socket client, final int listenPort) {
             new Thread(new Runnable() {
                 @Override
                 public void run() {
                     try {
                         client.setSoTimeout(3000);
                         InputStream in = client.getInputStream();
-                        byte[] buf = new byte[2048];
+                        byte[] buf = new byte[4096];
                         int len = in.read(buf);
-                        if (len > 0) {
-                            String req = new String(buf, 0, len, StandardCharsets.UTF_8);
-                            Log.d(TAG, "Camera NOTIFY received by LocalEventServer:\n" + req);
-                        }
+                        String req = (len > 0) ? new String(buf, 0, len, StandardCharsets.UTF_8) : "";
+                        Log.i(TAG, "Camera callback received on port " + listenPort + ":\n" + (req.length() > 200 ? req.substring(0, 200) + "..." : req));
+
                         OutputStream out = client.getOutputStream();
-                        String resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        // Standard Samsung camera acknowledgment response
+                        String resp = "HTTP/1.1 200 OK\r\n" +
+                                      "Server: Linux/2.6 UPnP/1.0 SEC_RVF/1.0\r\n" +
+                                      "Access-Method: manual\r\n" +
+                                      "Content-Length: 0\r\n" +
+                                      "Connection: close\r\n\r\n";
                         out.write(resp.getBytes(StandardCharsets.UTF_8));
                         out.flush();
-                        Log.i(TAG, "Acknowledged camera NOTIFY with 200 OK");
+                        Log.i(TAG, "Acknowledged camera callback with 200 OK on port " + listenPort);
                     } catch (Exception ignored) {
                     } finally {
                         try { client.close(); } catch (Exception ignored) {}
@@ -1282,13 +1526,21 @@ public class CameraClient {
 
         public synchronized void stop() {
             running = false;
-            if (serverSocket != null) {
-                try { serverSocket.close(); } catch (Exception ignored) {}
-                serverSocket = null;
+            if (primarySocket != null) {
+                try { primarySocket.close(); } catch (Exception ignored) {}
+                primarySocket = null;
             }
-            if (serverThread != null) {
-                serverThread.interrupt();
-                serverThread = null;
+            if (secondarySocket != null) {
+                try { secondarySocket.close(); } catch (Exception ignored) {}
+                secondarySocket = null;
+            }
+            if (primaryThread != null) {
+                primaryThread.interrupt();
+                primaryThread = null;
+            }
+            if (secondaryThread != null) {
+                secondaryThread.interrupt();
+                secondaryThread = null;
             }
         }
     }
