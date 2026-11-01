@@ -126,7 +126,7 @@
                 android:textSize="12sp" />
 
             <Button
-                android:id="@+id/btn_manual_ip"
+                android:id="@+id/btn_direct_ip"
                 style="@style/ApplePillButton"
                 android:layout_width="0dp"
                 android:layout_height="38dp"
@@ -140,31 +140,31 @@
 
     </LinearLayout>
 
-    <!-- Main Content: Empty State Instructions or Photo List -->
+    <!-- Main Content: Empty State Instructions or Photo Grid -->
     <FrameLayout
         android:id="@+id/layout_content_container"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_below="@id/layout_top_header"
-        android:layout_above="@+id/layout_floating_action_bar">
+        android:layout_above="@+id/layout_batch_controls">
 
-        <!-- Photo Grid/List -->
-        <ListView
-            android:id="@+id/list_photos"
+        <!-- Photo Grid View -->
+        <GridView
+            android:id="@+id/grid_photos"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:divider="#1C1C1E"
-            android:dividerHeight="1dp"
-            android:paddingLeft="12dp"
-            android:paddingRight="12dp"
-            android:paddingTop="8dp"
-            android:paddingBottom="8dp"
+            android:numColumns="3"
+            android:verticalSpacing="6dp"
+            android:horizontalSpacing="6dp"
+            android:stretchMode="columnWidth"
+            android:padding="8dp"
             android:clipToPadding="false"
+            android:layout_marginBottom="76dp"
             android:visibility="gone" />
 
         <!-- Empty State Instructions -->
         <ScrollView
-            android:id="@+id/layout_empty_state"
+            android:id="@+id/scroll_empty_instructions"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:padding="16dp"
@@ -279,9 +279,9 @@
 
     </FrameLayout>
 
-    <!-- Bottom Floating Bar: iOS Glassmorphism Action Bar -->
+    <!-- Bottom Floating Bar: iOS Batch Controls -->
     <LinearLayout
-        android:id="@+id/layout_floating_action_bar"
+        android:id="@+id/layout_batch_controls"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_alignParentBottom="true"
@@ -291,7 +291,8 @@
         android:paddingTop="12dp"
         android:paddingBottom="16dp"
         android:orientation="vertical"
-        android:elevation="12dp">
+        android:elevation="12dp"
+        android:visibility="gone">
 
         <!-- Top status inside bar: Selection Counter -->
         <LinearLayout
@@ -339,6 +340,40 @@
             android:letterSpacing="-0.01"
             android:enabled="false" />
 
+    </LinearLayout>
+
+    <!-- Download Progress Overlay Bar -->
+    <LinearLayout
+        android:id="@+id/layout_download_progress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_alignParentBottom="true"
+        android:background="@drawable/floating_bar_bg"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="16dp"
+        android:elevation="14dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/txt_download_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/downloading_photos"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:gravity="center" />
+
+        <ProgressBar
+            android:id="@+id/progress_download"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginTop="10dp"
+            android:progressDrawable="@drawable/badge_searching" />
     </LinearLayout>
 
 </RelativeLayout>

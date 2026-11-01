@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
     private LinearLayout cardWifiStatus;
     private View indicatorWifiDot;
     private TextView txtHomeWifiName;
-    private Button btnHomeWifiSettings;
+    private TextView btnHomeWifiSettings;
 
     private LinearLayout cardSelectMobileLink;
     private LinearLayout cardSelectViewfinder;

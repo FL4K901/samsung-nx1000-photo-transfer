@@ -33,6 +33,7 @@
     
     <string name="download_completed">Download complete! Photos saved to Gallery.</string>
     <string name="downloading_progress">Downloading %1$d of %2$d...</string>
+    <string name="downloading_photos">Downloading photos...</string>
     <string name="preview_download_single">Download this photo</string>
     <string name="preview_close">Close</string>
 
