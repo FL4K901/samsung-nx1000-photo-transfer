@@ -30,7 +30,7 @@
                 android:layout_height="38dp"
                 android:background="@drawable/button_secondary"
                 android:src="@drawable/ic_arrow_back"
-                android:contentDescription="חזרה"
+                android:contentDescription="Back"
                 android:padding="8dp"
                 android:layout_marginEnd="12dp" />
 
@@ -52,7 +52,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="עינית חיה ושליטה על צילום מרחוק"
+                    android:text="Live View &amp; Remote Shutter"
                     android:textColor="#8E8E93"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -75,7 +75,7 @@
                 android:background="@drawable/badge_disconnected"
                 android:paddingLeft="12dp"
                 android:paddingRight="12dp"
-                android:text="ממתין לחיבור עם המצלמה במצב Remote Viewfinder"
+                android:text="Waiting for camera in Remote Viewfinder mode..."
                 android:textColor="#8E8E93"
                 android:textSize="12sp"
                 android:textStyle="bold"
@@ -106,9 +106,9 @@
                 android:id="@+id/btn_rvf_connect"
                 android:layout_width="0dp"
                 android:layout_height="40dp"
-                android:layout_weight="1.4"
+                android:layout_weight="1.3"
                 android:background="@drawable/button_accent"
-                android:text="התחבר לעינית"
+                android:text="Connect Camera"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -117,10 +117,21 @@
                 android:id="@+id/btn_rvf_wifi"
                 android:layout_width="0dp"
                 android:layout_height="40dp"
-                android:layout_weight="1.1"
-                android:layout_marginLeft="8dp"
+                android:layout_weight="1"
+                android:layout_marginLeft="6dp"
                 android:background="@drawable/button_secondary"
-                android:text="הגדרות Wi-Fi"
+                android:text="Wi-Fi Settings"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btn_rvf_ip"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="0.8"
+                android:layout_marginLeft="6dp"
+                android:background="@drawable/button_secondary"
+                android:text="Direct IP"
                 android:textColor="#FFFFFF"
                 android:textSize="12sp" />
         </LinearLayout>
@@ -164,7 +175,7 @@
                 android:id="@+id/txt_rvf_instructions"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="1. במצלמה: סובב את החוגה ל-Wi-Fi ובחר Remote Viewfinder.\n2. חבר את הטלפון לרשת ה-Wi-Fi של המצלמה.\n3. לחץ למעלה על 'התחבר לעינית'."
+                android:text="1. On camera: rotate dial to Wi-Fi and select Remote Viewfinder.\n2. Connect phone Wi-Fi to camera network.\n3. Tap \'Connect Camera\' above to start live view."
                 android:textColor="#8E8E93"
                 android:textSize="13sp"
                 android:gravity="center"
@@ -198,7 +209,13 @@
                 android:layout_width="60dp"
                 android:layout_height="60dp"
                 android:layout_gravity="center"
-                android:background="@drawable/badge_disconnected" />
+                android:background="@drawable/island_capsule" />
+
+            <View
+                android:layout_width="54dp"
+                android:layout_height="54dp"
+                android:layout_gravity="center"
+                android:background="@drawable/badge_connected" />
         </FrameLayout>
 
     </LinearLayout>

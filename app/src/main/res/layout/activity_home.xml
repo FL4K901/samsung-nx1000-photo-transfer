@@ -81,7 +81,7 @@
                 android:layout_weight="1"
                 android:layout_marginStart="12dp"
                 android:layout_marginEnd="8dp"
-                android:text="בודק חיבור Wi-Fi..."
+                android:text="Checking Wi-Fi status..."
                 android:textColor="#FFFFFF"
                 android:textSize="14sp"
                 android:textStyle="bold" />
@@ -90,7 +90,7 @@
                 android:id="@+id/btn_home_wifi_settings"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="הגדרות"
+                android:text="Wi-Fi Settings"
                 android:textColor="#0A84FF"
                 android:textSize="13sp"
                 android:textStyle="bold"
@@ -101,7 +101,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="בחר מצב פעולה"
+            android:text="SELECT CAMERA MODE"
             android:textColor="#8E8E93"
             android:textSize="13sp"
             android:textStyle="bold"
@@ -145,11 +145,11 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="העברת קבצים"
+                    android:text="PHOTO TRANSFER"
                     android:textColor="#30D158"
                     android:textSize="11sp"
                     android:textStyle="bold"
-                    android:background="#122E1A"
+                    android:background="#163820"
                     android:paddingStart="6dp"
                     android:paddingEnd="6dp"
                     android:paddingTop="2dp"
@@ -168,7 +168,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="עיון והורדת תמונות וסרטונים מהמצלמה ישירות לגלריה באיכות מלאה."
+                    android:text="Browse camera photos, select files, and transfer full-resolution images directly to phone gallery."
                     android:textColor="#8E8E93"
                     android:textSize="13sp"
                     android:layout_marginTop="2dp" />
@@ -218,7 +218,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="עינית חיה וצילום"
+                    android:text="LIVE PREVIEW &amp; SHUTTER"
                     android:textColor="#0A84FF"
                     android:textSize="11sp"
                     android:textStyle="bold"
@@ -241,7 +241,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="צפייה בשידור חי מעדשת המצלמה ושליטה על צילום מרחוק."
+                    android:text="Stream live video feed from camera lens and trigger camera shutter remotely from phone."
                     android:textColor="#8E8E93"
                     android:textSize="13sp"
                     android:layout_marginTop="2dp" />
@@ -265,7 +265,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="כיצד להתחבר למצלמה?"
+                android:text="How to Connect:"
                 android:textColor="#FFFFFF"
                 android:textSize="14sp"
                 android:textStyle="bold"
@@ -274,7 +274,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="1. במצלמת ה-NX1000 העבר את חוגת המצבים ל-Wi-Fi.\n2. בחר במצלמה את המצב הרצוי (MobileLink או Remote Viewfinder).\n3. חבר את הטלפון לרשת ה-Wi-Fi של המצלמה.\n4. לחץ על הכרטיס המתאים למעלה."
+                android:text="1. On your NX camera, rotate mode dial to Wi-Fi.\n2. Select either MobileLink or Remote Viewfinder.\n3. Connect phone Wi-Fi to camera network (e.g. NX1000...).\n4. Tap the matching card above to connect."
                 android:textColor="#8E8E93"
                 android:textSize="12sp"
                 android:lineSpacingExtra="4dp" />

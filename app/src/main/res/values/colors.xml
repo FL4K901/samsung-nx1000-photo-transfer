@@ -22,6 +22,7 @@
     <color name="ios_teal">#40C8E0</color>
 
     <!-- Apple iOS Typography Colors -->
+    <color name="white">#FFFFFF</color>
     <color name="text_primary">#FFFFFF</color>
     <color name="text_secondary">#8E8E93</color>
     <color name="text_tertiary">#636366</color>

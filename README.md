@@ -1,9 +1,9 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.4.0-blue.svg)](release/NX-MobileLink-v1.4.0.apk)
+[![Release](https://img.shields.io/badge/Release-v1.4.1-blue.svg)](release/NX-MobileLink-v1.4.1.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
-[![APK Size](https://img.shields.io/badge/APK%20Size-80%20KB-success.svg)](release/NX-MobileLink-v1.4.0.apk)
+[![APK Size](https://img.shields.io/badge/APK%20Size-108%20KB-success.svg)](release/NX-MobileLink-v1.4.1.apk)
 
 Modern, open-source Android application for wireless photo and video transfer from **Samsung NX1000** (and compatible Samsung NX series cameras) to modern Android smartphones running **Android 7.0 through Android 14+**.
 
@@ -43,7 +43,7 @@ This project is a clean-room, reverse-engineered native Android solution that co
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.4.0.apk](release/NX-MobileLink-v1.4.0.apk)**
+👉 **[Download NX-MobileLink-v1.4.1.apk](release/NX-MobileLink-v1.4.1.apk)**
 
 1. Transfer or download the APK to your Android device.
 2. Open the file and allow "Install from Unknown Sources" if prompted.
@@ -80,7 +80,7 @@ Requires Android SDK build-tools and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.4.0.apk`.
+The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.4.1.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -91,6 +91,18 @@ The output APK will be generated, zip-aligned, and signed with both v1 and v2 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.4.1
+* **100% English UI**: Clean, professional internationalization across all views, strings, toasts, and dialogs.
+* **HumbleHttpClient Architecture (Socket Exhaustion Fix)**:
+  - Reverse-engineered from Samsung's legacy APK (`HumbleHttpClient.java`). Replaces Android's `HttpURLConnection` (which pools HTTP/1.1 keep-alive sockets) with raw single-purpose TCP sockets using strict `HTTP/1.0` headers and immediate socket closure.
+  - Eliminates the VxWorks RTOS socket exhaustion bug that previously disconnected the Wi-Fi link after downloading ~3 photos.
+  - Pauses background thumbnail loading during full photo downloads to guarantee exclusive socket bandwidth.
+* **Samsung UPnP SOAP Remote Viewfinder Protocol**:
+  - Implements dynamic endpoint and stream discovery via UPnP SOAP `GetInfomation` / `GetInformation`.
+  - Camera LCD acknowledges connection immediately upon receiving `GetInfomation`, resetting the hardware auto-shutdown timer.
+  - Hardware shutter capture triggered via official UPnP SOAP `Shot` / `ShotWithGPS` action with automatic refocus and exposure lock.
+  - Continuous resilient MJPEG stream decoder with auto-reconnect and 2.5s keep-alive loop.
 
 ### Version 1.4.0
 * **Modular Dashboard Architecture**: Introduced an Apple Dark Mode Home Screen with separate interactive cards for **MobileLink** and **Remote Viewfinder**, allowing modular development and maintenance without cross-feature bugs.

@@ -121,15 +121,15 @@ public class PhotoAdapter extends BaseAdapter {
         // Status
         if (item.getDownloadStatus() == PhotoItem.STATUS_COMPLETED) {
             holder.txtStatus.setVisibility(View.VISIBLE);
-            holder.txtStatus.setText("✓ הורד בהצלחה");
+            holder.txtStatus.setText("✓ Saved");
             holder.txtStatus.setTextColor(0xFF30D158);
         } else if (item.getDownloadStatus() == PhotoItem.STATUS_DOWNLOADING) {
             holder.txtStatus.setVisibility(View.VISIBLE);
-            holder.txtStatus.setText("מוריד...");
+            holder.txtStatus.setText("Downloading...");
             holder.txtStatus.setTextColor(0xFFFF9F0A);
         } else if (item.getDownloadStatus() == PhotoItem.STATUS_ERROR) {
             holder.txtStatus.setVisibility(View.VISIBLE);
-            holder.txtStatus.setText("שגיאה בהורדה");
+            holder.txtStatus.setText("Failed");
             holder.txtStatus.setTextColor(0xFFFF453A);
         } else {
             holder.txtStatus.setVisibility(View.GONE);
@@ -159,33 +159,28 @@ public class PhotoAdapter extends BaseAdapter {
                 imageThreadPool.execute(new Runnable() {
                     @Override
                     public void run() {
+                        // Pause background thumbnails while full photo download is active to prevent socket collision
+                        if (MobileLinkClient.isDownloading.get()) {
+                            return;
+                        }
+
                         try {
-                            URL url = new URL(thumbUrl);
-                            HttpURLConnection conn = MobileLinkClient.openConnection(url);
-                            conn.setConnectTimeout(4000);
-                            conn.setReadTimeout(5000);
-                            conn.setRequestProperty("User-Agent", MobileLinkClient.getUserAgent());
-                            conn.setRequestProperty("Connection", "close");
+                            final Bitmap bmp = HumbleHttpClient.downloadBitmap(
+                                    MobileLinkClient.getActiveWifiNetwork(),
+                                    thumbUrl,
+                                    MobileLinkClient.getUserAgent()
+                            );
 
-                            if (conn.getResponseCode() == 200) {
-                                InputStream in = conn.getInputStream();
-                                final Bitmap bmp = BitmapFactory.decodeStream(in);
-                                in.close();
-                                conn.disconnect();
-
-                                if (bmp != null) {
-                                    memoryCache.put(thumbUrl, bmp);
-                                    mainHandler.post(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            if (thumbUrl.equals(holder.imgThumbnail.getTag())) {
-                                                holder.imgThumbnail.setImageBitmap(bmp);
-                                            }
+                            if (bmp != null) {
+                                memoryCache.put(thumbUrl, bmp);
+                                mainHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (thumbUrl.equals(holder.imgThumbnail.getTag())) {
+                                            holder.imgThumbnail.setImageBitmap(bmp);
                                         }
-                                    });
-                                }
-                            } else {
-                                conn.disconnect();
+                                    }
+                                });
                             }
                         } catch (Exception e) {
                             Log.d(TAG, "Error loading thumb: " + thumbUrl);

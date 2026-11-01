@@ -1,6 +1,7 @@
 package com.nx.mobilelink;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -14,9 +15,12 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -37,11 +41,12 @@ public class ViewfinderActivity extends Activity {
     private ProgressBar progressScan;
     private Button btnConnect;
     private Button btnWifi;
+    private Button btnDirectIp;
 
     private ImageView imgPreview;
     private LinearLayout layoutPlaceholder;
     private TextView txtInstructions;
-    private ImageButton btnShutter;
+    private FrameLayout btnShutter;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean isConnecting = false;
@@ -59,7 +64,7 @@ public class ViewfinderActivity extends Activity {
 
         // Auto-connect if Wi-Fi is active
         if (isConnectedToWifi()) {
-            startConnection();
+            startConnection(null);
         }
     }
 
@@ -69,6 +74,7 @@ public class ViewfinderActivity extends Activity {
         progressScan = findViewById(R.id.progress_rvf_scan);
         btnConnect = findViewById(R.id.btn_rvf_connect);
         btnWifi = findViewById(R.id.btn_rvf_wifi);
+        btnDirectIp = findViewById(R.id.btn_rvf_ip);
 
         imgPreview = findViewById(R.id.img_rvf_preview);
         layoutPlaceholder = findViewById(R.id.layout_rvf_placeholder);
@@ -92,9 +98,18 @@ public class ViewfinderActivity extends Activity {
         btnConnect.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                startConnection();
+                startConnection(null);
             }
         });
+
+        if (btnDirectIp != null) {
+            btnDirectIp.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showDirectIpDialog();
+                }
+            });
+        }
 
         btnShutter.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -142,17 +157,17 @@ public class ViewfinderActivity extends Activity {
 
     private void updateStatusBanner() {
         if (connectedCameraIp != null) {
-            txtStatusBadge.setText("✓ מחובר ל-Viewfinder (" + connectedCameraIp + ")");
+            txtStatusBadge.setText("✓ Connected - Live Stream Active (" + connectedCameraIp + ")");
             txtStatusBadge.setBackgroundResource(R.drawable.badge_connected);
             txtStatusBadge.setTextColor(getResources().getColor(R.color.status_green_text));
         } else if (isConnectedToWifi()) {
             String ssid = getCurrentWifiSsid();
-            String name = (ssid != null) ? "רשת: " + ssid : "רשת Wi-Fi מחוברת";
-            txtStatusBadge.setText(name + " (לחץ להתחברות)");
+            String name = (ssid != null) ? "Connected to: " + ssid : "Wi-Fi Connected";
+            txtStatusBadge.setText(name + " (Tap Connect Camera)");
             txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
             txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
         } else {
-            txtStatusBadge.setText("לא מחובר לרשת המצלמה");
+            txtStatusBadge.setText("Not connected to camera Wi-Fi");
             txtStatusBadge.setBackgroundResource(R.drawable.badge_disconnected);
             txtStatusBadge.setTextColor(getResources().getColor(R.color.status_red_text));
         }
@@ -170,21 +185,59 @@ public class ViewfinderActivity extends Activity {
             Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
             startActivity(intent);
         } catch (Exception e) {
-            Toast.makeText(this, "לא ניתן לפתוח הגדרות Wi-Fi", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Could not open Wi-Fi settings", Toast.LENGTH_SHORT).show();
         }
     }
 
-    private void startConnection() {
+    private void showDirectIpDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_ip, null);
+        builder.setView(dialogView);
+
+        final AlertDialog dialog = builder.create();
+
+        final EditText editIp = dialogView.findViewById(R.id.edit_camera_ip);
+        final EditText editPort = dialogView.findViewById(R.id.edit_camera_port);
+        Button btnCancel = dialogView.findViewById(R.id.dialog_ip_cancel);
+        Button btnDialogConnect = dialogView.findViewById(R.id.dialog_ip_connect);
+
+        String gw = ViewfinderClient.getWifiGatewayIp(this);
+        if (gw != null && !gw.isEmpty()) {
+            editIp.setText(gw);
+        }
+
+        btnCancel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                dialog.dismiss();
+            }
+        });
+
+        btnDialogConnect.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String ip = editIp.getText().toString().trim();
+                dialog.dismiss();
+                if (!ip.isEmpty()) {
+                    startConnection(ip);
+                }
+            }
+        });
+
+        dialog.show();
+    }
+
+    private void startConnection(final String customIp) {
         if (isConnecting) return;
         isConnecting = true;
 
         progressScan.setVisibility(View.VISIBLE);
         btnConnect.setEnabled(false);
-        txtStatusBadge.setText("מתחבר ל-Remote Viewfinder...");
+        txtStatusBadge.setText("Connecting to Remote Viewfinder...");
         txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
         txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
 
-        ViewfinderClient.connect(this, null, new ViewfinderClient.ConnectionCallback() {
+        ViewfinderClient.connect(this, customIp, new ViewfinderClient.ConnectionCallback() {
             @Override
             public void onConnected(final String cameraIp) {
                 mainHandler.post(new Runnable() {
@@ -195,7 +248,7 @@ public class ViewfinderActivity extends Activity {
                         btnConnect.setEnabled(true);
                         connectedCameraIp = cameraIp;
                         updateStatusBanner();
-                        Toast.makeText(ViewfinderActivity.this, "התחבר בהצלחה ל-Remote Viewfinder!", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(ViewfinderActivity.this, "Connected to Remote Viewfinder!", Toast.LENGTH_SHORT).show();
 
                         // Start receiving live stream
                         startStream(cameraIp);
@@ -247,13 +300,13 @@ public class ViewfinderActivity extends Activity {
 
     private void onShutterClicked() {
         if (connectedCameraIp == null) {
-            Toast.makeText(this, "אנא התחבר למצלמה תחילה", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Please connect to camera first", Toast.LENGTH_SHORT).show();
             return;
         }
 
         btnShutter.setEnabled(false);
         btnShutter.setAlpha(0.5f);
-        Toast.makeText(this, "מצלם תמונה...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Capturing photo...", Toast.LENGTH_SHORT).show();
 
         ViewfinderClient.triggerShutter(connectedCameraIp, new ViewfinderClient.ShutterCallback() {
             @Override
@@ -263,7 +316,7 @@ public class ViewfinderActivity extends Activity {
                     public void run() {
                         btnShutter.setEnabled(true);
                         btnShutter.setAlpha(1.0f);
-                        Toast.makeText(ViewfinderActivity.this, "התמונה צולמה בהצלחה ונשמרה במצלמה!", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(ViewfinderActivity.this, "Photo captured successfully!", Toast.LENGTH_SHORT).show();
                     }
                 });
             }
@@ -275,7 +328,7 @@ public class ViewfinderActivity extends Activity {
                     public void run() {
                         btnShutter.setEnabled(true);
                         btnShutter.setAlpha(1.0f);
-                        Toast.makeText(ViewfinderActivity.this, "צילום: " + error, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(ViewfinderActivity.this, "Capture: " + error, Toast.LENGTH_SHORT).show();
                     }
                 });
             }

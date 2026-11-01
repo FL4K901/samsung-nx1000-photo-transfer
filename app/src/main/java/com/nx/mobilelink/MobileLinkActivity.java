@@ -162,7 +162,7 @@ public class MobileLinkActivity extends Activity {
         photoAdapter.setOnSelectionChangeListener(new PhotoAdapter.OnSelectionChangeListener() {
             @Override
             public void onSelectionChanged(int selectedCount, int totalCount) {
-                txtSelectionCount.setText(selectedCount + " מתוך " + totalCount + " נבחרו");
+                txtSelectionCount.setText(selectedCount + " of " + totalCount + " selected");
                 btnDownloadSelected.setEnabled(selectedCount > 0);
             }
         });
@@ -224,13 +224,13 @@ public class MobileLinkActivity extends Activity {
 
     private void updateStatusBanner() {
         if (connectedDevice != null) {
-            txtStatusBadge.setText("✓ " + connectedDevice.friendlyName + " (מחובר)");
+            txtStatusBadge.setText("✓ " + connectedDevice.friendlyName + " (Connected)");
             txtStatusBadge.setBackgroundResource(R.drawable.badge_connected);
             txtStatusBadge.setTextColor(getResources().getColor(R.color.status_green_text));
         } else if (isConnectedToWifi()) {
             String ssid = getCurrentWifiSsid();
-            String name = (ssid != null) ? "רשת: " + ssid : "רשת Wi-Fi מחוברת";
-            txtStatusBadge.setText(name + " (לחץ לסריקה)");
+            String name = (ssid != null) ? "Connected to: " + ssid : "Wi-Fi Connected";
+            txtStatusBadge.setText(name + " (Tap Connect Camera)");
             txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
             txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
         } else {
@@ -252,7 +252,7 @@ public class MobileLinkActivity extends Activity {
             Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
             startActivity(intent);
         } catch (Exception e) {
-            Toast.makeText(this, "לא ניתן לפתוח הגדרות Wi-Fi", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Could not open Wi-Fi settings", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -275,7 +275,7 @@ public class MobileLinkActivity extends Activity {
                         connectedDevice = device;
                         MobileLinkClient.startKeepAlive(MobileLinkActivity.this, device);
                         updateStatusBanner();
-                        Toast.makeText(MobileLinkActivity.this, "נמצאה מצלמה: " + device.friendlyName, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(MobileLinkActivity.this, "Camera found: " + device.friendlyName, Toast.LENGTH_SHORT).show();
                         loadPhotosFromCamera(device);
                     }
                 });
@@ -292,7 +292,7 @@ public class MobileLinkActivity extends Activity {
                         updateStatusBanner();
 
                         if (connectedDevice == null && isConnectedToWifi()) {
-                            txtStatusBadge.setText("ממתין לאישור במצלמה... סורק שוב");
+                            txtStatusBadge.setText("Waiting for camera approval... Scanning again");
                             txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
                             txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
                             mainHandler.postDelayed(new Runnable() {
@@ -332,7 +332,7 @@ public class MobileLinkActivity extends Activity {
                             mainHandler.post(new Runnable() {
                                 @Override
                                 public void run() {
-                                    txtStatusBadge.setText("ממתין לתמונות... (ודא אישור 'כן' במצלמה)");
+                                    txtStatusBadge.setText("Waiting for photos... (Confirm 'Yes' on camera)");
                                 }
                             });
                             try { Thread.sleep(1500); } catch (InterruptedException ignored) { break; }
@@ -354,10 +354,10 @@ public class MobileLinkActivity extends Activity {
                                 gridPhotos.setVisibility(View.VISIBLE);
                                 layoutBatchControls.setVisibility(View.VISIBLE);
                                 photoAdapter.notifyDataSetChanged();
-                                txtSelectionCount.setText("0 מתוך " + photoList.size() + " נבחרו");
-                                Toast.makeText(MobileLinkActivity.this, "נטענו " + photoList.size() + " קבצים", Toast.LENGTH_SHORT).show();
+                                txtSelectionCount.setText("0 of " + photoList.size() + " selected");
+                                Toast.makeText(MobileLinkActivity.this, "Loaded " + photoList.size() + " photos", Toast.LENGTH_SHORT).show();
                             } else {
-                                Toast.makeText(MobileLinkActivity.this, "לא נמצאו תמונות בכרטיס המצלמה. אם המצלמה שואלת 'האם להתיר חיבור', לחץ 'כן' במצלמה!", Toast.LENGTH_LONG).show();
+                                Toast.makeText(MobileLinkActivity.this, "No photos found on camera SD card. If camera prompts 'Allow connection', press 'Yes' on camera!", Toast.LENGTH_LONG).show();
                             }
                         }
                     });
@@ -369,7 +369,7 @@ public class MobileLinkActivity extends Activity {
                             progressScan.setVisibility(View.GONE);
                             btnScanCamera.setEnabled(true);
                             Log.e(TAG, "Error browsing photos", e);
-                            Toast.makeText(MobileLinkActivity.this, "שגיאה בטעינת תמונות: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                            Toast.makeText(MobileLinkActivity.this, "Error loading photos: " + e.getMessage(), Toast.LENGTH_LONG).show();
                         }
                     });
                 }
@@ -429,7 +429,7 @@ public class MobileLinkActivity extends Activity {
         }
 
         if (selected.isEmpty()) {
-            Toast.makeText(this, "אנא סמן לפחות קובץ אחד להורדה", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Please select at least one photo to download", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -471,9 +471,9 @@ public class MobileLinkActivity extends Activity {
                             item.setDownloadStatus(PhotoItem.STATUS_ERROR);
                         }
 
-                        // Flush delay: give camera storage and TCP stack 400ms to close socket cleanly
+                        // Flush delay: give camera storage and TCP stack 300ms to close socket cleanly
                         try {
-                            Thread.sleep(400);
+                            Thread.sleep(300);
                         } catch (InterruptedException ignored) {}
 
                         mainHandler.post(new Runnable() {
@@ -497,9 +497,9 @@ public class MobileLinkActivity extends Activity {
                         btnDownloadSelected.setEnabled(true);
 
                         new AlertDialog.Builder(MobileLinkActivity.this)
-                                .setTitle("ההורדה הושלמה!")
-                                .setMessage(finalSuccess + " מתוך " + selected.size() + " קבצים נשמרו בהצלחה בגלריה בתיקיית NX1000.")
-                                .setPositiveButton("אישור", null)
+                                .setTitle("Download Complete!")
+                                .setMessage(finalSuccess + " of " + selected.size() + " photos saved to Gallery (NX1000 folder).")
+                                .setPositiveButton("OK", null)
                                 .show();
                     }
                 });
@@ -521,7 +521,7 @@ public class MobileLinkActivity extends Activity {
         Button btnDownload = dialogView.findViewById(R.id.dialog_btn_download);
 
         txtTitle.setText(item.getTitle());
-        txtInfo.setText("גודל: " + item.getFormattedSize() + " | תאריך: " + item.getDate());
+        txtInfo.setText("Size: " + item.getFormattedSize() + " | Date: " + item.getDate());
 
         // Load preview
         imgPreview.setImageResource(R.drawable.thumb_placeholder);
@@ -531,26 +531,18 @@ public class MobileLinkActivity extends Activity {
             @Override
             public void run() {
                 try {
-                    URL url = new URL(loadUrl);
-                    HttpURLConnection conn = MobileLinkClient.openConnection(url);
-                    conn.setConnectTimeout(4000);
-                    conn.setReadTimeout(6000);
-                    conn.setRequestProperty("User-Agent", MobileLinkClient.getUserAgent());
-                    if (conn.getResponseCode() == 200) {
-                        InputStream in = conn.getInputStream();
-                        final Bitmap bmp = BitmapFactory.decodeStream(in);
-                        in.close();
-                        conn.disconnect();
-                        if (bmp != null) {
-                            mainHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    imgPreview.setImageBitmap(bmp);
-                                }
-                            });
-                        }
-                    } else {
-                        conn.disconnect();
+                    final Bitmap bmp = HumbleHttpClient.downloadBitmap(
+                            MobileLinkClient.getActiveWifiNetwork(),
+                            loadUrl,
+                            MobileLinkClient.getUserAgent()
+                    );
+                    if (bmp != null) {
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                imgPreview.setImageBitmap(bmp);
+                            }
+                        });
                     }
                 } catch (Exception ignored) {}
             }
@@ -575,7 +567,7 @@ public class MobileLinkActivity extends Activity {
     }
 
     private void downloadSinglePhoto(final PhotoItem item) {
-        Toast.makeText(this, "מתחיל בהורדת " + item.getTitle() + "...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Downloading " + item.getTitle() + "...", Toast.LENGTH_SHORT).show();
         item.setDownloadStatus(PhotoItem.STATUS_DOWNLOADING);
         photoAdapter.notifyDataSetChanged();
 
@@ -590,7 +582,7 @@ public class MobileLinkActivity extends Activity {
                         @Override
                         public void run() {
                             photoAdapter.notifyDataSetChanged();
-                            Toast.makeText(MobileLinkActivity.this, item.getTitle() + " נשמר בהצלחה בגלריה!", Toast.LENGTH_LONG).show();
+                            Toast.makeText(MobileLinkActivity.this, item.getTitle() + " saved to Gallery!", Toast.LENGTH_LONG).show();
                         }
                     });
                 } catch (final Exception e) {
@@ -599,7 +591,7 @@ public class MobileLinkActivity extends Activity {
                         @Override
                         public void run() {
                             photoAdapter.notifyDataSetChanged();
-                            Toast.makeText(MobileLinkActivity.this, "שגיאה בהורדה: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                            Toast.makeText(MobileLinkActivity.this, "Download error: " + e.getMessage(), Toast.LENGTH_LONG).show();
                         }
                     });
                 }

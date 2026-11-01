@@ -140,14 +140,14 @@ public class MainActivity extends Activity {
     private void updateWifiStatusBanner() {
         if (isConnectedToWifi()) {
             String ssid = getCurrentWifiSsid();
-            String name = (ssid != null) ? "מחובר לרשת: " + ssid : "מחובר ל-Wi-Fi";
+            String name = (ssid != null) ? "Connected to: " + ssid : "Connected to Wi-Fi";
             txtHomeWifiName.setText(name);
             txtHomeWifiName.setTextColor(0xFFFFFFFF);
             if (indicatorWifiDot != null) {
                 indicatorWifiDot.setBackgroundResource(R.drawable.badge_connected);
             }
         } else {
-            txtHomeWifiName.setText("לא מחובר ל-Wi-Fi (התחבר למצלמה)");
+            txtHomeWifiName.setText("Not connected to Wi-Fi (Connect to camera network)");
             txtHomeWifiName.setTextColor(0xFF8E8E93);
             if (indicatorWifiDot != null) {
                 indicatorWifiDot.setBackgroundResource(R.drawable.badge_disconnected);
@@ -167,7 +167,7 @@ public class MainActivity extends Activity {
             Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
             startActivity(intent);
         } catch (Exception e) {
-            Toast.makeText(this, "לא ניתן לפתוח הגדרות Wi-Fi", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Could not open Wi-Fi settings", Toast.LENGTH_SHORT).show();
         }
     }
 

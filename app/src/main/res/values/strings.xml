@@ -2,37 +2,51 @@
 <resources>
     <string name="app_name">NX Cam Link</string>
     <string name="title_camera">NX Camera</string>
-    <string name="app_subtitle">חיבור אלחוטי והעברת תמונות ממצלמת NX</string>
+    <string name="app_subtitle">Samsung Smart Camera Companion</string>
     
-    <string name="status_not_connected">לא מחובר לרשת המצלמה</string>
-    <string name="status_searching">מחפש מצלמה... אנא אשר \'כן\' במסך המצלמה במידה ומופיעה הודעה</string>
-    <string name="status_connected">מחובר למצלמה: %s</string>
-    <string name="status_failed">לא נמצאה מצלמה - ודא חיבור ל-Wi-Fi של המצלמה</string>
+    <string name="status_not_connected">Not connected to camera</string>
+    <string name="status_searching">Searching for camera... Approve on camera screen if prompted</string>
+    <string name="status_connected">Connected: %s</string>
+    <string name="status_failed">Camera not found - Check Wi-Fi connection</string>
     
-    <string name="btn_scan">סרוק וחבר מצלמה</string>
-    <string name="btn_wifi_settings">הגדרות Wi-Fi</string>
-    <string name="btn_select_all">בחר הכל</string>
-    <string name="btn_unselect_all">בטל בחירה</string>
-    <string name="btn_download_selected">הורד תמונות נבחרות</string>
-    <string name="btn_direct_ip">חיבור ישיר / IP</string>
+    <string name="btn_scan">Connect Camera</string>
+    <string name="btn_wifi_settings">Wi-Fi Settings</string>
+    <string name="btn_select_all">Select All</string>
+    <string name="btn_unselect_all">Deselect All</string>
+    <string name="btn_download_selected">Download Selected</string>
+    <string name="btn_direct_ip">Direct IP</string>
     
-    <string name="empty_instruction_title">הוראות חיבור למצלמה</string>
-    <string name="instruction_mode_rvf_title">אפשרות 1: Remote Viewfinder (מומלץ ומהיר)</string>
-    <string name="instruction_mode_rvf_desc">במצלמה סובב לגלגלת Wi-Fi ובחר Remote Viewfinder. בטלפון התחבר לרשת ה-Wi-Fi של המצלמה ולחץ \"סרוק וחבר מצלמה\".</string>
+    <string name="empty_instruction_title">How to Connect to Camera</string>
+    <string name="instruction_mode_rvf_title">Option 1: Remote Viewfinder (Live View)</string>
+    <string name="instruction_mode_rvf_desc">Set camera dial to Wi-Fi and select Remote Viewfinder. Connect your phone to camera Wi-Fi and tap Connect Camera.</string>
     
-    <string name="instruction_mode_ml_title">אפשרות 2: MobileLink</string>
-    <string name="instruction_mode_ml_desc">במצלמה בחר MobileLink ובחר \"כל התמונות\". שים לב: כשמופיעה הודעה על מסך המצלמה \"האם להתיר חיבור מהטלפון?\", לחץ חובה על \"כן\" (Yes) במצלמה!</string>
+    <string name="instruction_mode_ml_title">Option 2: MobileLink (Photo Transfer)</string>
+    <string name="instruction_mode_ml_desc">Set camera dial to Wi-Fi and select MobileLink -> \'Select files from smartphone\'. Connect phone to camera Wi-Fi, tap Connect Camera, and press \'Yes\' on camera screen.</string>
     
-    <string name="instruction_tip_title">טיפ חשוב למניעת כיבוי ה-Wi-Fi:</string>
-    <string name="instruction_tip_desc">בהגדרות המצלמה (תפריט מפתח ברגים), הגדר \"כיבוי מסך אוטומטי\" ל-5 או 10 דקות כדי שהמצלמה לא תכבה את ה-Wi-Fi באמצע עבודה.</string>
+    <string name="instruction_tip_title">Tip to prevent camera turning off:</string>
+    <string name="instruction_tip_desc">In camera settings (wrench menu), set \'Power Off Time\' to 5 or 10 minutes so the camera does not turn off during transfer.</string>
     
-    <string name="dialog_ip_title">חיבור ישיר לפי כתובת IP</string>
-    <string name="dialog_ip_msg">הזן את כתובת ה-IP של המצלמה (ברירת המחדל ברשת המצלמה היא 192.168.107.1):</string>
-    <string name="dialog_ip_connect">התחבר</string>
-    <string name="dialog_cancel">ביטול</string>
+    <string name="dialog_ip_title">Direct IP Connection</string>
+    <string name="dialog_ip_msg">Enter camera IP address (default camera AP gateway is 192.168.107.1):</string>
+    <string name="dialog_ip_connect">Connect</string>
+    <string name="dialog_cancel">Cancel</string>
     
-    <string name="download_completed">ההורדה הושלמה! התמונות נשמרו בגלריה.</string>
-    <string name="downloading_progress">מוריד קובץ %1$d מתוך %2$d...</string>
-    <string name="preview_download_single">הורד תמונה זו לטלפון</string>
-    <string name="preview_close">סגור</string>
+    <string name="download_completed">Download complete! Photos saved to Gallery.</string>
+    <string name="downloading_progress">Downloading %1$d of %2$d...</string>
+    <string name="preview_download_single">Download this photo</string>
+    <string name="preview_close">Close</string>
+
+    <string name="mode_mobilelink_title">MobileLink</string>
+    <string name="mode_mobilelink_subtitle">Browse &amp; Transfer Photos</string>
+    <string name="mode_mobilelink_desc">View camera gallery, preview thumbnails, and download full-resolution photos directly to your phone.</string>
+
+    <string name="mode_viewfinder_title">Remote Viewfinder</string>
+    <string name="mode_viewfinder_subtitle">Live View &amp; Remote Shutter</string>
+    <string name="mode_viewfinder_desc">Real-time live preview stream from camera lens, framing control, and remote shutter release.</string>
+
+    <string name="status_rvf_waiting">Waiting for camera in Remote Viewfinder mode...</string>
+    <string name="status_rvf_connected">Connected - Live Stream Active</string>
+    <string name="status_saved">Saved</string>
+    <string name="status_downloading">Downloading...</string>
+    <string name="status_error">Error</string>
 </resources>

@@ -97,6 +97,10 @@ public class MobileLinkClient {
         Log.i(TAG, "MobileLink setActiveWifiNetwork: " + network);
     }
 
+    public static Network getActiveWifiNetwork() {
+        return activeWifiNetwork;
+    }
+
     public static String getWifiGatewayIp(Context context) {
         try {
             WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -960,26 +964,6 @@ public class MobileLinkClient {
                 fileName = "NX_" + System.currentTimeMillis() + (item.isVideo() ? ".mp4" : ".jpg");
             }
 
-            URL url = new URL(item.getFullUrl());
-            HttpURLConnection conn = openConnection(url);
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(30000);
-            conn.setRequestProperty("User-Agent", getUserAgent());
-            conn.setRequestProperty("Accept", "*/*");
-            conn.setRequestProperty("Connection", "close");
-
-            int code = conn.getResponseCode();
-            if (code != 200 && code != 206) {
-                throw new Exception("HTTP server returned error: " + code);
-            }
-
-            long contentLength = conn.getContentLength();
-            if (contentLength <= 0 && item.getSizeBytes() > 0) {
-                contentLength = item.getSizeBytes();
-            }
-
-            InputStream in = new BufferedInputStream(conn.getInputStream(), 32768);
             OutputStream out = null;
             Uri insertedUri = null;
             File fallbackFile = null;
@@ -1012,24 +996,22 @@ public class MobileLinkClient {
                 out = new FileOutputStream(fallbackFile);
             }
 
-            byte[] buffer = new byte[32 * 1024];
-            long totalRead = 0;
-            int bytesRead;
-
+            // Download using HumbleHttpClient (Strict HTTP/1.0 raw socket, immediate close)
+            // This prevents VxWorks RTOS socket exhaustion and eliminates the 3-photo disconnect!
+            final long itemSize = item.getSizeBytes();
             try {
-                while ((bytesRead = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, bytesRead);
-                    totalRead += bytesRead;
-                    if (listener != null) {
-                        int percent = (contentLength > 0) ? (int) ((totalRead * 100) / contentLength) : -1;
-                        listener.onProgress(totalRead, contentLength, percent);
+                HumbleHttpClient.download(activeWifiNetwork, item.getFullUrl(), getUserAgent(), out, new HumbleHttpClient.ProgressCallback() {
+                    @Override
+                    public void onProgress(long bytesRead, long totalBytes, int percent) {
+                        if (listener != null) {
+                            long total = (totalBytes > 0) ? totalBytes : itemSize;
+                            int pct = (total > 0) ? (int) ((bytesRead * 100) / total) : -1;
+                            listener.onProgress(bytesRead, total, pct);
+                        }
                     }
-                }
-                out.flush();
+                });
             } finally {
                 try { out.close(); } catch (Exception ignored) {}
-                try { in.close(); } catch (Exception ignored) {}
-                conn.disconnect();
             }
 
             if (insertedUri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
