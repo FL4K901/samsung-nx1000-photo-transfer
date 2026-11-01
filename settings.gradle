@@ -1,0 +1,2 @@
+rootProject.name = "samsung-nx1000-photo-transfer"
+include ':app'

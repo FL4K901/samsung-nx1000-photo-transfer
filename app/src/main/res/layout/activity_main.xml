@@ -1,0 +1,352 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/ios_bg">
+
+    <!-- Top Fixed Container: iOS Header & Dynamic Island Status -->
+    <LinearLayout
+        android:id="@+id/layout_top_header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_alignParentTop="true"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="8dp"
+        android:background="@color/ios_bg">
+
+        <!-- iOS Large Title & Subtitle -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/title_camera"
+            android:textColor="@color/text_primary"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:letterSpacing="-0.02" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_subtitle"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:layout_marginTop="2dp" />
+
+        <!-- Dynamic Island Status Capsule -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/island_capsule"
+            android:padding="8dp">
+
+            <TextView
+                android:id="@+id/txt_status_badge"
+                android:layout_width="match_parent"
+                android:layout_height="34dp"
+                android:background="@drawable/badge_disconnected"
+                android:paddingLeft="12dp"
+                android:paddingRight="12dp"
+                android:text="@string/status_not_connected"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:gravity="center"
+                android:singleLine="true"
+                android:ellipsize="end" />
+
+            <!-- Scan progress indicator -->
+            <ProgressBar
+                android:id="@+id/progress_scan"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="4dp"
+                android:indeterminate="true"
+                android:visibility="gone"
+                android:layout_marginTop="6dp" />
+        </LinearLayout>
+
+        <!-- iOS Action Pills Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="10dp"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/btn_scan_camera"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1.4"
+                android:background="@drawable/button_primary"
+                android:text="@string/btn_scan"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btn_open_wifi"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1.1"
+                android:layout_marginLeft="6dp"
+                android:background="@drawable/button_secondary"
+                android:text="@string/btn_wifi_settings"
+                android:textColor="@color/text_primary"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btn_direct_ip"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="0.9"
+                android:layout_marginLeft="6dp"
+                android:background="@drawable/button_secondary"
+                android:text="IP ישיר"
+                android:textColor="@color/text_primary"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- Main Content Area -->
+    <FrameLayout
+        android:id="@+id/layout_content_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_below="@id/layout_top_header"
+        android:layout_marginBottom="0dp">
+
+        <!-- Empty State Instructions (iOS Inset Grouped Table) -->
+        <ScrollView
+            android:id="@+id/scroll_empty_instructions"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:fillViewport="true"
+            android:padding="14dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/empty_instruction_title"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:paddingLeft="6dp"
+                    android:paddingBottom="6dp" />
+
+                <!-- Grouped Card Container -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/card_bg"
+                    android:padding="14dp">
+
+                    <!-- Mode 1: Remote Viewfinder -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:background="@drawable/card_inner"
+                        android:padding="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/instruction_mode_rvf_title"
+                            android:textColor="@color/ios_green"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/instruction_mode_rvf_desc"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:layout_marginTop="4dp"
+                            android:lineSpacingExtra="2dp" />
+                    </LinearLayout>
+
+                    <!-- Mode 2: MobileLink -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/card_inner"
+                        android:padding="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/instruction_mode_ml_title"
+                            android:textColor="@color/ios_blue"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/instruction_mode_ml_desc"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:layout_marginTop="4dp"
+                            android:lineSpacingExtra="2dp" />
+                    </LinearLayout>
+
+                    <!-- Tip Card -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/card_inner"
+                        android:padding="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/instruction_tip_title"
+                            android:textColor="@color/ios_orange"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/instruction_tip_desc"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:layout_marginTop="4dp"
+                            android:lineSpacingExtra="2dp" />
+                    </LinearLayout>
+
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btn_instruction_scan"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="18dp"
+                    android:background="@drawable/button_primary"
+                    android:text="סרוק וחבר למצלמה"
+                    android:textColor="#FFFFFF"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- Photos Grid View (Apple Photos 3-column layout) -->
+        <GridView
+            android:id="@+id/grid_photos"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:numColumns="3"
+            android:verticalSpacing="6dp"
+            android:horizontalSpacing="6dp"
+            android:stretchMode="columnWidth"
+            android:padding="8dp"
+            android:clipToPadding="false"
+            android:paddingBottom="90dp"
+            android:visibility="gone" />
+
+    </FrameLayout>
+
+    <!-- Download Progress Banner (Appears above floating bar during download) -->
+    <LinearLayout
+        android:id="@+id/layout_download_progress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_above="@+id/layout_batch_controls"
+        android:layout_margin="12dp"
+        android:background="@drawable/card_bg"
+        android:padding="12dp"
+        android:visibility="gone"
+        android:elevation="6dp">
+
+        <TextView
+            android:id="@+id/txt_download_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="מוריד תמונות..."
+            android:textColor="@color/ios_blue"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <ProgressBar
+            android:id="@+id/progress_download"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginTop="8dp" />
+    </LinearLayout>
+
+    <!-- Floating Glass Action Bar (Apple iOS Floating Capsule) -->
+    <LinearLayout
+        android:id="@+id/layout_batch_controls"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:orientation="horizontal"
+        android:layout_alignParentBottom="true"
+        android:layout_marginLeft="14dp"
+        android:layout_marginRight="14dp"
+        android:layout_marginBottom="14dp"
+        android:background="@drawable/floating_bar_bg"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:gravity="center_vertical"
+        android:elevation="8dp"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/btn_toggle_select_all"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:background="@drawable/button_secondary"
+            android:text="@string/btn_select_all"
+            android:textColor="@color/text_primary"
+            android:textSize="12sp"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp" />
+
+        <TextView
+            android:id="@+id/txt_selection_count"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="0 נבחרו"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:gravity="center"
+            android:singleLine="true" />
+
+        <Button
+            android:id="@+id/btn_download_selected"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:background="@drawable/button_primary"
+            android:text="הורד נבחרים"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:paddingLeft="14dp"
+            android:paddingRight="14dp"
+            android:enabled="false" />
+
+    </LinearLayout>
+
+</RelativeLayout>

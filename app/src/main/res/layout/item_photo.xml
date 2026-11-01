@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/card_bg"
+    android:padding="5dp">
+
+    <!-- Square Thumbnail Container -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="115dp">
+
+        <ImageView
+            android:id="@+id/img_thumbnail"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/thumb_placeholder"
+            android:scaleType="centerCrop" />
+
+        <!-- Checkbox overlay in top right -->
+        <CheckBox
+            android:id="@+id/chk_photo_select"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_alignParentTop="true"
+            android:layout_alignParentRight="true"
+            android:layout_margin="2dp" />
+
+        <!-- Video Badge overlay if video -->
+        <TextView
+            android:id="@+id/badge_video"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentBottom="true"
+            android:layout_alignParentLeft="true"
+            android:layout_margin="3dp"
+            android:background="#CC000000"
+            android:text="VIDEO"
+            android:textColor="#FFFFFF"
+            android:textSize="9sp"
+            android:textStyle="bold"
+            android:paddingLeft="5dp"
+            android:paddingRight="5dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:visibility="gone" />
+    </RelativeLayout>
+
+    <!-- Photo Info Section -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingTop="4dp"
+        android:paddingLeft="2dp"
+        android:paddingRight="2dp">
+
+        <TextView
+            android:id="@+id/txt_photo_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="SAM_0001.JPG"
+            android:textColor="@color/text_primary"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:singleLine="true"
+            android:ellipsize="middle" />
+
+        <TextView
+            android:id="@+id/txt_photo_info"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="4.2 MB"
+            android:textColor="@color/text_secondary"
+            android:textSize="10sp"
+            android:singleLine="true" />
+
+        <TextView
+            android:id="@+id/txt_photo_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="@color/ios_green"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:singleLine="true"
+            android:visibility="gone" />
+    </LinearLayout>
+
+</LinearLayout>

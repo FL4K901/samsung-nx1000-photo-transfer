@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Apple iOS System Dark Backgrounds -->
+    <color name="ios_bg">#000000</color>
+    <color name="ios_card">#1C1C1E</color>
+    <color name="ios_card_elevated">#2C2C2E</color>
+    <color name="ios_card_stroke">#38383A</color>
+    <color name="ios_divider">#2C2C2E</color>
+    <color name="ios_pill_bg">#242426</color>
+
+    <!-- Apple iOS System Accents -->
+    <color name="ios_blue">#0A84FF</color>
+    <color name="ios_blue_pressed">#0062CC</color>
+    <color name="ios_blue_soft">#162840</color>
+    <color name="ios_green">#30D158</color>
+    <color name="ios_green_bg">#122E1A</color>
+    <color name="ios_orange">#FF9F0A</color>
+    <color name="ios_orange_bg">#362208</color>
+    <color name="ios_red">#FF453A</color>
+    <color name="ios_red_bg">#361413</color>
+    <color name="ios_indigo">#5E5CE6</color>
+    <color name="ios_teal">#40C8E0</color>
+
+    <!-- Apple iOS Typography Colors -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#8E8E93</color>
+    <color name="text_tertiary">#636366</color>
+    <color name="text_muted">#48484A</color>
+
+    <!-- Backward compatibility mappings -->
+    <color name="primary">#000000</color>
+    <color name="primary_dark">#000000</color>
+    <color name="accent">#0A84FF</color>
+    <color name="accent_green">#30D158</color>
+    <color name="accent_orange">#FF9F0A</color>
+    <color name="accent_red">#FF453A</color>
+    <color name="background">#000000</color>
+    <color name="card_background">#1C1C1E</color>
+    <color name="divider">#2C2C2E</color>
+    <color name="status_green_text">#30D158</color>
+    <color name="status_orange_text">#FF9F0A</color>
+    <color name="status_red_text">#FF453A</color>
+</resources>
