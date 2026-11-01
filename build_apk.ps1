@@ -33,9 +33,10 @@ if ($LASTEXITCODE -ne 0) { throw "javac compilation failed" }
 # Clean generated R.java from src tree so it stays clean
 Remove-Item -Path "app\src\main\java\com\nx\mobilelink\R.java" -Force -ErrorAction SilentlyContinue
 
-Write-Host "5. Dexing classes with d8..."
-$classFiles = Get-ChildItem -Path "build\classes\com\nx\mobilelink\*.class" | ForEach-Object { $_.FullName }
-& "$BUILD_TOOLS\d8.bat" --release --min-api 21 --lib "$PLATFORM" --output build\dex $classFiles
+Write-Host "5. Packaging classes and dexing with d8..."
+& "$JAVA_HOME\bin\jar.exe" -cf "build\classes.jar" -C "build\classes" .
+if ($LASTEXITCODE -ne 0) { throw "jar classes failed" }
+& "$BUILD_TOOLS\d8.bat" --release --min-api 21 --lib "$PLATFORM" --output build\dex build\classes.jar
 if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
 
 Write-Host "6. Adding classes.dex to base.apk..."
@@ -49,14 +50,15 @@ Write-Host "7. Aligning APK with zipalign..."
 if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
 
 Write-Host "8. Signing APK with apksigner (v1 + v2)..."
-& "$BUILD_TOOLS\apksigner.bat" sign --min-sdk-version 21 --v1-signing-enabled true --v2-signing-enabled true --ks $KEYSTORE --ks-pass pass:android --key-pass pass:android --out release\NX-MobileLink-v1.3.1.apk build\aligned.apk
+& "$BUILD_TOOLS\apksigner.bat" sign --min-sdk-version 21 --v1-signing-enabled true --v2-signing-enabled true --ks $KEYSTORE --ks-pass pass:android --key-pass pass:android --out release\NX-MobileLink-v1.4.0.apk build\aligned.apk
 if ($LASTEXITCODE -ne 0) { throw "apksigner failed" }
 
 Write-Host "9. Verifying signature..."
-& "$BUILD_TOOLS\apksigner.bat" verify -v release\NX-MobileLink-v1.3.1.apk
+& "$BUILD_TOOLS\apksigner.bat" verify -v release\NX-MobileLink-v1.4.0.apk
 
-Copy-Item -Force "release\NX-MobileLink-v1.3.1.apk" "release\NX-MobileLink.apk"
-Copy-Item -Force "release\NX-MobileLink-v1.3.1.apk" "C:\Users\User\Downloads\NX-MobileLink.apk"
-Copy-Item -Force "release\NX-MobileLink-v1.3.1.apk" "c:\Users\User\Desktop\mobilelinknew\NX-MobileLink.apk"
+Copy-Item -Force "release\NX-MobileLink-v1.4.0.apk" "release\NX-MobileLink.apk"
+Copy-Item -Force "release\NX-MobileLink-v1.4.0.apk" "C:\Users\User\Downloads\NX-MobileLink.apk"
+Copy-Item -Force "release\NX-MobileLink-v1.4.0.apk" "C:\Users\User\Downloads\NX-MobileLink-v1.4.0.apk"
+Copy-Item -Force "release\NX-MobileLink-v1.4.0.apk" "c:\Users\User\Desktop\mobilelinknew\NX-MobileLink.apk"
 
-Write-Host "BUILD SUCCESSFUL! Output: release\NX-MobileLink-v1.3.1.apk (Size: $((Get-Item release\NX-MobileLink-v1.3.1.apk).Length) bytes)"
+Write-Host "BUILD SUCCESSFUL! Output: release\NX-MobileLink-v1.4.0.apk (Size: $((Get-Item release\NX-MobileLink-v1.4.0.apk).Length) bytes)"

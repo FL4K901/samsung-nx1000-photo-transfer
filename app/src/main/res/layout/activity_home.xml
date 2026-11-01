@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0A0A0C"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="36dp"
+        android:paddingBottom="28dp">
+
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="24dp">
+
+            <ImageView
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:src="@drawable/ic_launcher"
+                android:contentDescription="App Icon" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:layout_marginStart="14dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="NX Cam Link"
+                    android:textColor="#FFFFFF"
+                    android:textSize="22sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Samsung Smart Camera Companion"
+                    android:textColor="#8E8E93"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <!-- Wi-Fi Status Capsule -->
+        <LinearLayout
+            android:id="@+id/card_wifi_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@drawable/card_bg"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:layout_marginBottom="28dp">
+
+            <View
+                android:id="@+id/indicator_wifi_dot"
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:background="@drawable/badge_searching" />
+
+            <TextView
+                android:id="@+id/txt_home_wifi_name"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="12dp"
+                android:layout_marginEnd="8dp"
+                android:text="בודק חיבור Wi-Fi..."
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btn_home_wifi_settings"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="הגדרות"
+                android:textColor="#0A84FF"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:padding="6dp" />
+        </LinearLayout>
+
+        <!-- Section Title -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="בחר מצב פעולה"
+            android:textColor="#8E8E93"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.05"
+            android:layout_marginBottom="14dp" />
+
+        <!-- Card 1: MobileLink -->
+        <LinearLayout
+            android:id="@+id/card_select_mobilelink"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@drawable/card_home_selector"
+            android:clickable="true"
+            android:focusable="true"
+            android:padding="18dp"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout
+                android:layout_width="54dp"
+                android:layout_height="54dp"
+                android:background="@drawable/card_inner"
+                android:gravity="center">
+
+                <ImageView
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:src="@drawable/ic_card_mobilelink"
+                    android:contentDescription="MobileLink Icon" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:layout_marginStart="16dp"
+                android:layout_marginEnd="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="העברת קבצים"
+                    android:textColor="#30D158"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:background="#122E1A"
+                    android:paddingStart="6dp"
+                    android:paddingEnd="6dp"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp"
+                    android:layout_marginBottom="4dp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="MobileLink"
+                    android:textColor="#FFFFFF"
+                    android:textSize="19sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="עיון והורדת תמונות וסרטונים מהמצלמה ישירות לגלריה באיכות מלאה."
+                    android:textColor="#8E8E93"
+                    android:textSize="13sp"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_chevron_forward"
+                android:contentDescription="Open" />
+        </LinearLayout>
+
+        <!-- Card 2: Remote Viewfinder -->
+        <LinearLayout
+            android:id="@+id/card_select_viewfinder"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@drawable/card_home_selector"
+            android:clickable="true"
+            android:focusable="true"
+            android:padding="18dp"
+            android:layout_marginBottom="28dp">
+
+            <LinearLayout
+                android:layout_width="54dp"
+                android:layout_height="54dp"
+                android:background="@drawable/card_inner"
+                android:gravity="center">
+
+                <ImageView
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:src="@drawable/ic_card_viewfinder"
+                    android:contentDescription="Viewfinder Icon" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:layout_marginStart="16dp"
+                android:layout_marginEnd="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="עינית חיה וצילום"
+                    android:textColor="#0A84FF"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:background="#162840"
+                    android:paddingStart="6dp"
+                    android:paddingEnd="6dp"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp"
+                    android:layout_marginBottom="4dp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Remote Viewfinder"
+                    android:textColor="#FFFFFF"
+                    android:textSize="19sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="צפייה בשידור חי מעדשת המצלמה ושליטה על צילום מרחוק."
+                    android:textColor="#8E8E93"
+                    android:textSize="13sp"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_chevron_forward"
+                android:contentDescription="Open" />
+        </LinearLayout>
+
+        <!-- Instructions Box -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/card_inner"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="כיצד להתחבר למצלמה?"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="1. במצלמת ה-NX1000 העבר את חוגת המצבים ל-Wi-Fi.\n2. בחר במצלמה את המצב הרצוי (MobileLink או Remote Viewfinder).\n3. חבר את הטלפון לרשת ה-Wi-Fi של המצלמה.\n4. לחץ על הכרטיס המתאים למעלה."
+                android:textColor="#8E8E93"
+                android:textSize="12sp"
+                android:lineSpacingExtra="4dp" />
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

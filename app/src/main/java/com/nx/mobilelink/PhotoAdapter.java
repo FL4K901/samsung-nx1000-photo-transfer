@@ -161,10 +161,10 @@ public class PhotoAdapter extends BaseAdapter {
                     public void run() {
                         try {
                             URL url = new URL(thumbUrl);
-                            HttpURLConnection conn = CameraClient.openConnection(url);
+                            HttpURLConnection conn = MobileLinkClient.openConnection(url);
                             conn.setConnectTimeout(4000);
                             conn.setReadTimeout(5000);
-                            conn.setRequestProperty("User-Agent", CameraClient.getUserAgent());
+                            conn.setRequestProperty("User-Agent", MobileLinkClient.getUserAgent());
                             conn.setRequestProperty("Connection", "close");
 
                             if (conn.getResponseCode() == 200) {

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.nx.mobilelink"
-    android:versionCode="5"
-    android:versionName="1.3.1">
+    android:versionCode="6"
+    android:versionName="1.4.0">
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
 
@@ -39,6 +39,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MobileLinkActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <activity
+            android:name=".ViewfinderActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
 
     </application>
 

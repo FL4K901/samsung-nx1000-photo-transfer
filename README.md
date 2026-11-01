@@ -1,9 +1,9 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.3.1-blue.svg)](release/NX-MobileLink-v1.3.1.apk)
+[![Release](https://img.shields.io/badge/Release-v1.4.0-blue.svg)](release/NX-MobileLink-v1.4.0.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
-[![APK Size](https://img.shields.io/badge/APK%20Size-80%20KB-success.svg)](release/NX-MobileLink-v1.3.1.apk)
+[![APK Size](https://img.shields.io/badge/APK%20Size-80%20KB-success.svg)](release/NX-MobileLink-v1.4.0.apk)
 
 Modern, open-source Android application for wireless photo and video transfer from **Samsung NX1000** (and compatible Samsung NX series cameras) to modern Android smartphones running **Android 7.0 through Android 14+**.
 
@@ -17,19 +17,24 @@ Samsung discontinued official app support for its Smart Camera ecosystem years a
 * Changes in Android scoped storage permissions (Android 13+ `READ_MEDIA_IMAGES`).
 * Aggressive Android Wi-Fi handoff (disconnecting from camera APs that have no internet access).
 
-This project is a clean-room, reverse-engineered native Android solution that completely restores fast, stable, and seamless wireless photo transfer.
+This project is a clean-room, reverse-engineered native Android solution that completely restores fast, stable, and seamless wireless photo transfer and remote viewfinder functionality.
 
 ---
 
 ## ✨ Features
 
-- **Apple-Inspired Dark Mode UI**: Clean, modern dark aesthetic featuring dynamic status capsules, frosted glass cards, and a custom copyright-free camera lens icon.
-- **Deep Recursive Folder Browsing (BFS)**: Traverses multi-level SD card storage directories (`0` ➔ `Storage` ➔ `DCIM` ➔ `100_PHOTO`) so no photos are ever missed.
-- **Dual Camera Mode Support**:
-  - **MobileLink Mode**: The standard photo sharing mode on Samsung NX cameras with automated retry polling while approving on the camera LCD.
-  - **Remote Viewfinder Mode**: Full Mode Control daemon integration (port 7788/7679) with reciprocal event callback server and live stream activation, acknowledging connection on the physical camera screen and suppressing the auto-power-off timer.
-- **Anti-Timeout Keepalive Engine**: Periodic SSDP heartbeat, Mode Control registration (`NTS: alive`), raw HTTP description pings, and UPnP event subscriptions every 2.5 seconds to keep the camera's Wi-Fi radio from shutting off.
-- **Batch & Single Downloads**: Select individual photos or "Select All" with one tap, saving directly to the Android MediaStore / Gallery with instant thumbnail indexing.
+- **Apple-Inspired Dark Mode Home Screen**: Clean, modern dark dashboard featuring an interactive Wi-Fi status capsule and modular cards for **MobileLink** and **Remote Viewfinder**.
+- **100% Modular Protocol Architecture**: Completely separates MobileLink and Remote Viewfinder into independent clients and activities, preventing cross-protocol interference or playback engine deadlocks.
+- **Pure UPnP/DLNA MobileLink Engine**: 
+  - Speaks pure UPnP `ContentDirectory:1` with `SEC_DSC_<MAC>` identity.
+  - Deep Recursive Folder Browsing (BFS) across multi-level SD card directories (`0` ➔ `Storage` ➔ `DCIM` ➔ `100_PHOTO`).
+  - Automated 5-stage approval retry polling while the user presses 'Yes' on the camera LCD.
+  - Global atomic download lock with silent keepalive suspension during downloads, preventing socket congestion and camera disconnects.
+- **Dedicated Remote Viewfinder Engine**:
+  - Full Mode Control integration on port 7788 (`/mode/control`) with `SEC_RVF_<MAC>` identity.
+  - Dual-port reciprocal callback server (ports 7788 & 7792) to keep the camera LCD connected.
+  - Continuous MJPEG streaming pipeline from port 7679 (`/livestream.avi`) without socket aborts.
+  - Remote shutter trigger command.
 - **Ultra-Lightweight & Native**: Zero bloated third-party dependencies, built entirely using native Android APIs. The compiled, signed APK is only **~80 KB**!
 
 ---
@@ -38,7 +43,7 @@ This project is a clean-room, reverse-engineered native Android solution that co
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.3.1.apk](release/NX-MobileLink-v1.3.1.apk)**
+👉 **[Download NX-MobileLink-v1.4.0.apk](release/NX-MobileLink-v1.4.0.apk)**
 
 1. Transfer or download the APK to your Android device.
 2. Open the file and allow "Install from Unknown Sources" if prompted.
@@ -46,22 +51,25 @@ You can download the pre-built, signed APK directly from this repository:
 
 ---
 
-## 🔌 How to Connect
+## 🔌 How to Use
 
-### Option 1: MobileLink Mode (Recommended)
+### 1. Home Screen
+When you launch the app, you will see the **NX Cam Link** dashboard:
+* **Wi-Fi Status Capsule**: Shows current Wi-Fi SSID and status dot (tap to open Wi-Fi settings).
+* **Card 1: MobileLink** (Green icon) ➔ Tap to browse and download photos/videos from SD card.
+* **Card 2: Remote Viewfinder** (Blue icon) ➔ Tap for live video stream and remote shutter control.
+
+### 2. MobileLink Mode (Transfer Photos & Videos)
 1. On your Samsung NX camera, turn the mode dial to **Wi-Fi**.
-2. Select **MobileLink** from the camera screen.
-3. Choose **"Select files on smartphone"** or **"All files"**.
-4. **Important**: When the camera displays *"Allow connection from smartphone?"*, press **"Yes" (כן)** on the camera.
-5. On your phone, connect to the camera's Wi-Fi network (usually named `Samsung_NX...` or similar).
-6. Open **NX Cam Link** and tap **"סרוק וחבר מצלמה" (Scan & Connect)**.
-7. Your photos and videos will load immediately in a responsive grid. Select the photos you want and tap **"הורד תמונות נבחרות" (Download Selected)**.
+2. Select **MobileLink** ➔ choose **"Select files on smartphone"** or **"All files"**.
+3. **Important**: When the camera displays *"Allow connection from smartphone?"*, press **"Yes" (כן)** on the camera LCD.
+4. In the app, tap the **MobileLink** card and press **"סרוק וחבר מצלמה"**.
+5. Your photos load in a fast 3-column grid. Tap any photo for preview or select multiple files to download directly to your Android Gallery (`Downloads/NX1000`).
 
-### Option 2: Remote Viewfinder Mode
-1. Turn the mode dial to **Wi-Fi** and select **Remote Viewfinder**.
-2. Connect your phone to the camera's Wi-Fi.
-3. Open **NX Cam Link** and tap **"סרוק וחבר מצלמה"**.
-4. The app sends the Samsung Mode Control (`/mode/control`) handshake on port 7788 and activates the live stream (`/livestream.avi` on port 7679), while running a reciprocal callback server on port 7788/7792. The camera LCD screen immediately acknowledges the connection and cancels the standby power-off timer.
+### 3. Remote Viewfinder Mode (Live Preview & Shutter)
+1. Turn the camera mode dial to **Wi-Fi** and select **Remote Viewfinder**.
+2. In the app, tap the **Remote Viewfinder** card and press **"התחבר למצלמה"**.
+3. The camera displays "Connected to smartphone", live preview streams to your phone screen, and you can tap the circular shutter button to capture photos remotely!
 
 ---
 
@@ -72,7 +80,7 @@ Requires Android SDK build-tools and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.3.0.apk`.
+The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.4.0.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -82,32 +90,15 @@ The output APK will be generated, zip-aligned, and signed with both v1 and v2 si
 
 ---
 
-## 🔬 Protocol Reverse-Engineering Details
-
-- **Device Discovery**: The app sends UDP `M-SEARCH * HTTP/1.1` to `239.255.255.250:1900` searching for `urn:schemas-upnp-org:device:MediaServer:1` and probes candidate gateway ports (52235, 7676, 7679, 7788, 4004, 8080).
-- **Samsung Mode Control Handshake (Port 7788 & 7679)**:
-  ```http
-  GET /mode/control HTTP/1.0
-  HOST: 192.168.107.1:7788
-  User-Agent: SEC_MODE_<MAC>
-  Access-Method: manual
-  NTS: alive
-  Content-Length: 0
-  HOST-Mac: <MAC>
-  HOST-Address: <PHONE_IP>
-  HOST-port: 7788
-  Connection: close
-  ```
-- **Reciprocal Callback Server**: Runs a local server on port 7788 (and port 7792) returning `HTTP/1.1 200 OK` to acknowledge `/eventCallback` and `/mode/control` incoming queries from the camera.
-- **Client Identity**:
-  - MobileLink: `User-Agent: SEC_DSC_<PHONE_HEX_MAC>`
-  - Remote Viewfinder: `User-Agent: SEC_RVF_<PHONE_HEX_MAC>`
-- **Browsing Service**: Communicates with the UPnP `ContentDirectory:1` service using SOAP `Browse` actions with chunk sizes of 20–25 items to prevent buffer overruns on the camera's embedded VxWorks HTTP server.
-- **Wi-Fi Binding**: Uses `ConnectivityManager.bindProcessToNetwork` (Android 6.0+) so that Android does not route requests through cellular data when connected to the camera AP.
-
----
-
 ## 📋 Changelog
+
+### Version 1.4.0
+* **Modular Dashboard Architecture**: Introduced an Apple Dark Mode Home Screen with separate interactive cards for **MobileLink** and **Remote Viewfinder**, allowing modular development and maintenance without cross-feature bugs.
+* **Complete Protocol Separation**:
+  - `MobileLinkClient.java`: Pure UPnP/DLNA with zero video stream probes or port 7788/7679 interference, permanently fixing camera freezes in MobileLink mode.
+  - `ViewfinderClient.java`: Dedicated Remote Viewfinder client with continuous MJPEG stream reader and Mode Control keepalive, fixing the "Network disconnected" error caused by socket aborts.
+* **Remote Shutter Trigger**: Added remote capture trigger for Remote Viewfinder.
+* **Build System Optimization**: Packaged classes for `d8` via jar to prevent Windows cmdline length overflows.
 
 ### Version 1.3.1
 * **Download Traffic Isolation**: Pauses all background TCP keepalive pings during active photo/video downloads, eliminating TCP socket congestion on the camera's embedded web server and preventing unexpected "Network disconnected" errors during multi-file batch transfers.
