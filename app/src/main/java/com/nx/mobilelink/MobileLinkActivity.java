@@ -2,15 +2,9 @@ package com.nx.mobilelink;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.net.ConnectivityManager;
 import android.net.Network;
-import android.net.NetworkInfo;
-import android.net.wifi.WifiInfo;
-import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -34,9 +28,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -320,26 +311,30 @@ public class MobileLinkActivity extends Activity {
             @Override
             public void run() {
                 try {
+                    mainHandler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            txtStatusBadge.setText("Loading photos from camera...");
+                            txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
+                            txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
+                        }
+                    });
+
+                    // Direct automatic browse (matching SamsungCameraDownloader)
                     List<PhotoItem> loaded = null;
-                    final int maxAttempts = 20; // 30 seconds total waiting for user confirmation on camera LCD
-                    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                    try {
+                        loaded = MobileLinkClient.browsePhotos(device);
+                    } catch (Exception e) {
+                        Log.w(TAG, "First browse attempt notice: " + e.getMessage());
+                    }
+
+                    // If empty on first quick attempt, brief 400ms retry for slow camera initialization
+                    if (loaded == null || loaded.isEmpty()) {
+                        try { Thread.sleep(400); } catch (InterruptedException ignored) {}
                         try {
                             loaded = MobileLinkClient.browsePhotos(device);
-                            if (loaded != null && !loaded.isEmpty()) {
-                                break;
-                            }
-                        } catch (Exception be) {
-                            Log.w(TAG, "Browse attempt " + attempt + " error: " + be.getMessage());
-                        }
-                        if (attempt < maxAttempts) {
-                            final int curAttempt = attempt;
-                            mainHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    txtStatusBadge.setText("Waiting for photos... (Confirm 'Yes' on camera) [" + curAttempt + "/" + maxAttempts + "]");
-                                }
-                            });
-                            try { Thread.sleep(1500); } catch (InterruptedException ignored) { break; }
+                        } catch (Exception e) {
+                            Log.w(TAG, "Retry browse attempt notice: " + e.getMessage());
                         }
                     }
 
@@ -359,9 +354,15 @@ public class MobileLinkActivity extends Activity {
                                 layoutBatchControls.setVisibility(View.VISIBLE);
                                 photoAdapter.notifyDataSetChanged();
                                 txtSelectionCount.setText("0 of " + photoList.size() + " selected");
+                                txtStatusBadge.setText("✓ " + device.friendlyName + " (" + photoList.size() + " photos)");
+                                txtStatusBadge.setBackgroundResource(R.drawable.badge_connected);
+                                txtStatusBadge.setTextColor(getResources().getColor(R.color.status_green_text));
                                 Toast.makeText(MobileLinkActivity.this, "Loaded " + photoList.size() + " photos", Toast.LENGTH_SHORT).show();
                             } else {
-                                Toast.makeText(MobileLinkActivity.this, "No photos found on camera SD card. If camera prompts 'Allow connection', press 'Yes' on camera!", Toast.LENGTH_LONG).show();
+                                txtStatusBadge.setText("✓ " + device.friendlyName + " (0 photos)");
+                                txtStatusBadge.setBackgroundResource(R.drawable.badge_connected);
+                                txtStatusBadge.setTextColor(getResources().getColor(R.color.status_green_text));
+                                Toast.makeText(MobileLinkActivity.this, "No photos found on camera SD card.", Toast.LENGTH_LONG).show();
                             }
                         }
                     });

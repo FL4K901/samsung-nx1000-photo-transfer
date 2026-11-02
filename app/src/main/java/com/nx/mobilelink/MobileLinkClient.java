@@ -23,7 +23,6 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 
-import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 import java.io.BufferedInputStream;
@@ -330,7 +329,7 @@ public class MobileLinkClient {
                     activeDevice = foundDevice[0];
                     callback.onDeviceFound(foundDevice[0]);
                 } else {
-                    callback.onDiscoveryFailed("Camera not found in MobileLink mode. Ensure phone Wi-Fi is connected to camera, and press 'Yes' on camera screen if prompted.");
+                    callback.onDiscoveryFailed("Camera not found in MobileLink mode. Ensure phone Wi-Fi is connected to camera network.");
                 }
             }
         }).start();

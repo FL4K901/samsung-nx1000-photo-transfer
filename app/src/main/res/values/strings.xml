@@ -5,7 +5,7 @@
     <string name="app_subtitle">Samsung Smart Camera Companion</string>
     
     <string name="status_not_connected">Not connected to camera</string>
-    <string name="status_searching">Searching for camera... Approve on camera screen if prompted</string>
+    <string name="status_searching">Connecting to camera...</string>
     <string name="status_connected">Connected: %s</string>
     <string name="status_failed">Camera not found - Check Wi-Fi connection</string>
     
@@ -21,7 +21,7 @@
     <string name="instruction_mode_rvf_desc">Set camera dial to Wi-Fi and select Remote Viewfinder. Connect your phone to camera Wi-Fi and tap Connect Camera.</string>
     
     <string name="instruction_mode_ml_title">Option 2: MobileLink (Photo Transfer)</string>
-    <string name="instruction_mode_ml_desc">Set camera dial to Wi-Fi and select MobileLink -> \'Select files from smartphone\'. Connect phone to camera Wi-Fi, tap Connect Camera, and press \'Yes\' on camera screen.</string>
+    <string name="instruction_mode_ml_desc">Set camera dial to Wi-Fi and select MobileLink -> \'Select files from smartphone\'. Connect phone to camera Wi-Fi and tap Connect Camera.</string>
     
     <string name="instruction_tip_title">Tip to prevent camera turning off:</string>
     <string name="instruction_tip_desc">In camera settings (wrench menu), set \'Power Off Time\' to 5 or 10 minutes so the camera does not turn off during transfer.</string>

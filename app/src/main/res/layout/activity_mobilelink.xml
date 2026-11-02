@@ -233,7 +233,7 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Step 3: Approve on Camera"
+                        android:text="Step 3: Connect &amp; Browse"
                         android:textColor="@color/ios_green"
                         android:textSize="14sp"
                         android:textStyle="bold"
@@ -242,7 +242,7 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Tap 'Connect Camera' above. When the camera prompts 'Allow connection from smartphone?', press 'Yes' on the camera!"
+                        android:text="Tap 'Connect Camera' above. The app connects and loads your photos automatically."
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp"
                         android:lineSpacingExtra="3dp" />
