@@ -43,7 +43,7 @@ public class PhotoAdapter extends BaseAdapter {
         this.items = items;
         this.inflater = LayoutInflater.from(context);
         this.mainHandler = new Handler(Looper.getMainLooper());
-        this.imageThreadPool = Executors.newFixedThreadPool(2);
+        this.imageThreadPool = Executors.newSingleThreadExecutor();
 
         int maxMemory = (int) (Runtime.getRuntime().maxMemory() / 1024);
         int cacheSize = maxMemory / 8;
@@ -156,37 +156,41 @@ public class PhotoAdapter extends BaseAdapter {
             if (cached != null) {
                 holder.imgThumbnail.setImageBitmap(cached);
             } else {
-                imageThreadPool.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        // Pause background thumbnails while full photo download is active to prevent socket collision
-                        if (MobileLinkClient.isDownloading.get()) {
-                            return;
-                        }
-
-                        try {
-                            final Bitmap bmp = HumbleHttpClient.downloadBitmap(
-                                    MobileLinkClient.getActiveWifiNetwork(),
-                                    thumbUrl,
-                                    MobileLinkClient.getUserAgent()
-                            );
-
-                            if (bmp != null) {
-                                memoryCache.put(thumbUrl, bmp);
-                                mainHandler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        if (thumbUrl.equals(holder.imgThumbnail.getTag())) {
-                                            holder.imgThumbnail.setImageBitmap(bmp);
-                                        }
-                                    }
-                                });
+                // Avoid downloading large full-res photos (>500KB) as thumbnails to save camera sockets
+                boolean isHugeFullPhotoAsThumb = thumbUrl.equals(item.getFullUrl()) && item.getSizeBytes() > 500000;
+                if (!isHugeFullPhotoAsThumb && !MobileLinkClient.isDownloading.get()) {
+                    imageThreadPool.execute(new Runnable() {
+                        @Override
+                        public void run() {
+                            // Pause background thumbnails while full photo download is active to prevent socket collision
+                            if (MobileLinkClient.isDownloading.get()) {
+                                return;
                             }
-                        } catch (Exception e) {
-                            Log.d(TAG, "Error loading thumb: " + thumbUrl);
+
+                            try {
+                                final Bitmap bmp = HumbleHttpClient.downloadBitmap(
+                                        MobileLinkClient.getActiveWifiNetwork(),
+                                        thumbUrl,
+                                        MobileLinkClient.getUserAgent()
+                                );
+
+                                if (bmp != null) {
+                                    memoryCache.put(thumbUrl, bmp);
+                                    mainHandler.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (thumbUrl.equals(holder.imgThumbnail.getTag())) {
+                                                holder.imgThumbnail.setImageBitmap(bmp);
+                                            }
+                                        }
+                                    });
+                                }
+                            } catch (Exception e) {
+                                Log.d(TAG, "Error loading thumb: " + thumbUrl);
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
         }
 

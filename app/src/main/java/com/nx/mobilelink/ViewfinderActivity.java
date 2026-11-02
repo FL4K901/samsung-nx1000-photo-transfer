@@ -29,6 +29,8 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.List;
+
 /**
  * Remote Viewfinder Activity:
  * Real-time camera viewfinder stream and remote shutter control.
@@ -199,9 +201,14 @@ public class ViewfinderActivity extends Activity {
         Button btnCancel = dialogView.findViewById(R.id.dialog_ip_cancel);
         Button btnDialogConnect = dialogView.findViewById(R.id.dialog_ip_connect);
 
-        String gw = ViewfinderClient.getWifiGatewayIp(this);
-        if (gw != null && !gw.isEmpty()) {
-            editIp.setText(gw);
+        List<String> ips = NetworkManager.getCandidateCameraIps(this);
+        if (ips != null && !ips.isEmpty()) {
+            editIp.setText(ips.get(0));
+        } else {
+            String gw = ViewfinderClient.getWifiGatewayIp(this);
+            if (gw != null && !gw.isEmpty()) {
+                editIp.setText(gw);
+            }
         }
 
         btnCancel.setOnClickListener(new View.OnClickListener() {

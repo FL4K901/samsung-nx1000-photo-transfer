@@ -3,6 +3,7 @@ package com.nx.mobilelink;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
+import android.database.Cursor;
 import android.media.MediaScannerConnection;
 import android.net.ConnectivityManager;
 import android.net.DhcpInfo;
@@ -16,8 +17,14 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Log;
 
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserFactory;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.InputSource;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
@@ -37,26 +44,30 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Queue;
+import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Dedicated, isolated client for Samsung NX MobileLink mode.
- * Speaks pure UPnP/DLNA (ContentDirectory:1) with SEC_DSC_<MAC> identity.
- * Contains ZERO video streaming or RVF mode packets to prevent camera freezes.
+ * MobileLinkClient:
+ * Robust, native DLNA Digital Media Server (DMS-1.50) client for Samsung smart cameras
+ * (NX1000, WB350F, WB, EX, ST series).
+ *
+ * Implements pure UPnP/DLNA ContentDirectory service browsing and download logic
+ * reverse-engineered and verified against working hardware.
+ *
+ * CRITICAL STABILITY DESIGN:
+ * 1. Zero socket heartbeats / Zero background polling between user actions.
+ * 2. Recursive DOM-based tree browsing (ObjectID="0" DFS).
+ * 3. Port 7676 /smp_6_ priority direct probing.
+ * 4. Strict HTTP/1.0 sequential downloads with immediate socket closure.
  */
 public class MobileLinkClient {
     private static final String TAG = "MobileLinkClient";
@@ -70,8 +81,9 @@ public class MobileLinkClient {
     }
 
     public static class DeviceInfo {
-        public String friendlyName = "NX Camera (MobileLink)";
+        public String friendlyName = "Samsung Camera (MobileLink)";
         public String modelName = "NX Series";
+        public String manufacturer = "Samsung";
         public String baseUrl;
         public String locationUrl;
         public String controlUrl;
@@ -91,6 +103,20 @@ public class MobileLinkClient {
     private static Network activeWifiNetwork;
     public static final AtomicBoolean isDownloading = new AtomicBoolean(false);
     private static DeviceInfo activeDevice;
+
+    private static final Map<String, String> MIME_EXT = new HashMap<>();
+    static {
+        MIME_EXT.put("image/jpeg", ".jpg");
+        MIME_EXT.put("image/jpg", ".jpg");
+        MIME_EXT.put("image/png", ".png");
+        MIME_EXT.put("image/gif", ".gif");
+        MIME_EXT.put("image/bmp", ".bmp");
+        MIME_EXT.put("video/mp4", ".mp4");
+        MIME_EXT.put("video/mpeg", ".mpg");
+        MIME_EXT.put("video/x-msvideo", ".avi");
+        MIME_EXT.put("video/quicktime", ".mov");
+        MIME_EXT.put("video/3gpp", ".3gp");
+    }
 
     public static void setActiveWifiNetwork(Network network) {
         activeWifiNetwork = network;
@@ -230,6 +256,10 @@ public class MobileLinkClient {
         return conn;
     }
 
+    // =========================================================================
+    // DISCOVERY ENGINE: SSDP (upnp:rootdevice) + Port 7676 /smp_6_ Direct Probing
+    // =========================================================================
+
     public static void discoverCamera(final Context context, final String customIp, final int customPort, final DiscoveryCallback callback) {
         new Thread(new Runnable() {
             @Override
@@ -249,39 +279,39 @@ public class MobileLinkClient {
                 for (String ip : discovered) {
                     if (!candidateIps.contains(ip)) candidateIps.add(ip);
                 }
+                // Known Samsung default AP gateways
+                if (!candidateIps.contains("192.168.107.1")) candidateIps.add("192.168.107.1");
+                if (!candidateIps.contains("192.168.49.1")) candidateIps.add("192.168.49.1");
+                if (!candidateIps.contains("192.168.1.1")) candidateIps.add("192.168.1.1");
 
-                // Known Samsung MediaServer ports
                 final int[] candidatePorts = (customPort > 0) ? new int[]{customPort} :
-                        new int[]{52235, 7676, 80};
+                        new int[]{7676, 52235, 80, 49152, 49153, 8080};
 
-                final long deadline = System.currentTimeMillis() + 15000;
+                final long deadline = System.currentTimeMillis() + 8000;
 
-                // 1. Background SSDP discovery thread
+                // 1. Background SSDP discovery thread (matching SamsungCameraDownloader)
                 Thread ssdpThread = new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        while (!resolved.get() && System.currentTimeMillis() < deadline) {
-                            try {
-                                DeviceInfo dev = performSsdpSearch(1500, candidateIps);
-                                if (dev != null && resolved.compareAndSet(false, true)) {
-                                    foundDevice[0] = dev;
-                                    break;
-                                }
-                            } catch (Exception ignored) {}
-                            try { Thread.sleep(250); } catch (InterruptedException ie) { break; }
-                        }
+                        try {
+                            DeviceInfo dev = performSsdpSearch(3500, candidateIps);
+                            if (dev != null && resolved.compareAndSet(false, true)) {
+                                foundDevice[0] = dev;
+                            }
+                        } catch (Exception ignored) {}
                     }
                 }, "MobileLink-SSDP-Search");
                 ssdpThread.start();
 
-                // 2. Direct HTTP Probing on primary Samsung MediaServer ports
+                // 2. Direct HTTP Probing on primary Samsung MediaServer endpoints
+                // Checks port 7676 /smp_6_ FIRST as priority (primary Samsung camera endpoint)
                 while (!resolved.get() && System.currentTimeMillis() < deadline) {
                     for (String ip : candidateIps) {
                         if (resolved.get()) break;
                         for (int p : candidatePorts) {
                             if (resolved.get()) break;
-                            if (isPortOpen(ip, p, 400)) {
-                                Log.i(TAG, "Port " + p + " is open on " + ip + "! Probing description XML...");
+                            if (isPortOpen(ip, p, 300)) {
+                                Log.i(TAG, "Port " + p + " is open on " + ip + "! Probing UPnP description...");
                                 DeviceInfo dev = probeHttpEndpoint(ip, p);
                                 if (dev != null && resolved.compareAndSet(false, true)) {
                                     foundDevice[0] = dev;
@@ -300,7 +330,7 @@ public class MobileLinkClient {
                     activeDevice = foundDevice[0];
                     callback.onDeviceFound(foundDevice[0]);
                 } else {
-                    callback.onDiscoveryFailed("Camera not found in MobileLink mode. Ensure phone Wi-Fi is connected to camera, and if the camera prompts 'Allow connection from smartphone?', press 'Yes' on the camera.");
+                    callback.onDiscoveryFailed("Camera not found in MobileLink mode. Ensure phone Wi-Fi is connected to camera, and press 'Yes' on camera screen if prompted.");
                 }
             }
         }).start();
@@ -316,33 +346,26 @@ public class MobileLinkClient {
             }
             socket.setSoTimeout(timeoutMs);
 
-            String[] searchTargets = new String[]{
-                    "ssdp:all",
-                    "urn:schemas-upnp-org:device:MediaServer:1",
-                    "urn:schemas-upnp-org:service:ContentDirectory:1",
-                    "upnp:rootdevice"
-            };
+            // Exactly matching SamsungCameraDownloader: ST: upnp:rootdevice, MX: 3
+            String searchMsg = "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: 239.255.255.250:1900\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 3\r\n" +
+                    "ST: upnp:rootdevice\r\n\r\n";
+            byte[] bytes = searchMsg.getBytes(StandardCharsets.UTF_8);
 
+            // Multicast
             InetAddress multicastGroup = InetAddress.getByName("239.255.255.250");
+            try {
+                socket.send(new DatagramPacket(bytes, bytes.length, multicastGroup, 1900));
+            } catch (Exception ignored) {}
 
-            for (String st : searchTargets) {
-                String searchMsg = "M-SEARCH * HTTP/1.1\r\n" +
-                        "HOST: 239.255.255.250:1900\r\n" +
-                        "MAN: \"ssdp:discover\"\r\n" +
-                        "MX: 2\r\n" +
-                        "ST: " + st + "\r\n\r\n";
-                byte[] bytes = searchMsg.getBytes(StandardCharsets.UTF_8);
-
-                try {
-                    socket.send(new DatagramPacket(bytes, bytes.length, multicastGroup, 1900));
-                } catch (Exception ignored) {}
-
-                if (candidateIps != null) {
-                    for (String cip : candidateIps) {
-                        try {
-                            socket.send(new DatagramPacket(bytes, bytes.length, InetAddress.getByName(cip), 1900));
-                        } catch (Exception ignored) {}
-                    }
+            // Direct unicast to candidate IPs on port 1900
+            if (candidateIps != null) {
+                for (String cip : candidateIps) {
+                    try {
+                        socket.send(new DatagramPacket(bytes, bytes.length, InetAddress.getByName(cip), 1900));
+                    } catch (Exception ignored) {}
                 }
             }
 
@@ -356,7 +379,7 @@ public class MobileLinkClient {
                     String location = extractHeader(resp, "LOCATION");
                     if (location != null && !location.isEmpty()) {
                         DeviceInfo dev = fetchAndParseDeviceDescription(location);
-                        if (dev != null) return dev;
+                        if (dev != null && dev.controlUrl != null) return dev;
                     }
                 } catch (SocketTimeoutException te) {
                     break;
@@ -370,17 +393,21 @@ public class MobileLinkClient {
     }
 
     private static DeviceInfo probeHttpEndpoint(String ip, int port) {
+        // Priority endpoints matching SamsungCameraDownloader & Samsung DSC UPnP firmware:
         String[] paths = new String[]{
+                "/smp_6_",                // Samsung primary description endpoint!
                 "/description.xml",
+                "/rootDesc.xml",
+                "/smp_4_",
+                "/smp_2_",
                 "/smp_10_",
                 "/dmr/SamsungMRDesc.xml",
-                "/upnp/ContentDirectory.xml",
-                "/rootDesc.xml"
+                "/upnp/ContentDirectory.xml"
         };
         for (String p : paths) {
             String testUrl = "http://" + ip + ":" + port + p;
             DeviceInfo dev = fetchAndParseDeviceDescription(testUrl);
-            if (dev != null) return dev;
+            if (dev != null && dev.controlUrl != null) return dev;
         }
         return null;
     }
@@ -407,62 +434,74 @@ public class MobileLinkClient {
         return null;
     }
 
+    private static String getLocalName(Node node) {
+        if (node == null) return "";
+        String name = node.getLocalName();
+        if (name == null || name.isEmpty()) name = node.getNodeName();
+        if (name != null && name.contains(":")) {
+            name = name.substring(name.indexOf(':') + 1);
+        }
+        return name != null ? name : "";
+    }
+
+    private static Element findElementByLocalName(Node root, String targetName) {
+        if (root == null) return null;
+        if (root.getNodeType() == Node.ELEMENT_NODE && getLocalName(root).equalsIgnoreCase(targetName)) {
+            return (Element) root;
+        }
+        NodeList children = root.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Element found = findElementByLocalName(children.item(i), targetName);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static void findAllElementsByLocalName(Node root, String targetName, List<Element> out) {
+        if (root == null) return;
+        if (root.getNodeType() == Node.ELEMENT_NODE && getLocalName(root).equalsIgnoreCase(targetName)) {
+            out.add((Element) root);
+        }
+        NodeList children = root.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            findAllElementsByLocalName(children.item(i), targetName, out);
+        }
+    }
+
     private static DeviceInfo parseDeviceDescriptionXml(String locationUrl, String xml) {
         try {
+            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+            dbf.setNamespaceAware(false);
+            Document doc = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
+
             DeviceInfo device = new DeviceInfo();
             device.locationUrl = locationUrl;
-
             URL u = new URL(locationUrl);
             device.baseUrl = u.getProtocol() + "://" + u.getHost() + (u.getPort() != -1 ? ":" + u.getPort() : "");
 
-            XmlPullParserFactory factory = XmlPullParserFactory.newInstance();
-            factory.setNamespaceAware(false);
-            XmlPullParser parser = factory.newPullParser();
-            parser.setInput(new StringReader(xml));
+            Element fnElem = findElementByLocalName(doc.getDocumentElement(), "friendlyName");
+            if (fnElem != null) device.friendlyName = fnElem.getTextContent().trim();
 
-            int eventType = parser.getEventType();
-            ServiceInfo currentService = null;
-            String currentTag = "";
+            Element mnElem = findElementByLocalName(doc.getDocumentElement(), "modelName");
+            if (mnElem != null) device.modelName = mnElem.getTextContent().trim();
 
-            while (eventType != XmlPullParser.END_DOCUMENT) {
-                if (eventType == XmlPullParser.START_TAG) {
-                    currentTag = parser.getName();
-                    if ("service".equalsIgnoreCase(currentTag)) {
-                        currentService = new ServiceInfo();
-                    }
-                } else if (eventType == XmlPullParser.TEXT) {
-                    String text = parser.getText().trim();
-                    if (!text.isEmpty()) {
-                        if ("friendlyName".equalsIgnoreCase(currentTag) && device.friendlyName.contains("MobileLink")) {
-                            device.friendlyName = text;
-                        } else if ("modelName".equalsIgnoreCase(currentTag)) {
-                            device.modelName = text;
-                        } else if (currentService != null) {
-                            if ("serviceType".equalsIgnoreCase(currentTag)) {
-                                currentService.serviceType = text;
-                            } else if ("serviceId".equalsIgnoreCase(currentTag)) {
-                                currentService.serviceId = text;
-                            } else if ("SCPDURL".equalsIgnoreCase(currentTag)) {
-                                currentService.scpdUrl = resolveUrl(device.baseUrl, text);
-                            } else if ("controlURL".equalsIgnoreCase(currentTag)) {
-                                currentService.controlUrl = resolveUrl(device.baseUrl, text);
-                            } else if ("eventSubURL".equalsIgnoreCase(currentTag)) {
-                                currentService.eventSubUrl = resolveUrl(device.baseUrl, text);
-                            }
-                        }
-                    }
-                } else if (eventType == XmlPullParser.END_TAG) {
-                    if ("service".equalsIgnoreCase(parser.getName()) && currentService != null) {
-                        device.services.add(currentService);
-                        if (currentService.serviceType != null &&
-                                currentService.serviceType.toLowerCase().contains("contentdirectory")) {
-                            device.controlUrl = currentService.controlUrl;
-                        }
-                        currentService = null;
-                    }
-                    currentTag = "";
+            Element mfrElem = findElementByLocalName(doc.getDocumentElement(), "manufacturer");
+            if (mfrElem != null) device.manufacturer = mfrElem.getTextContent().trim();
+
+            List<Element> svcNodes = new ArrayList<>();
+            findAllElementsByLocalName(doc.getDocumentElement(), "service", svcNodes);
+            for (Element svcElem : svcNodes) {
+                ServiceInfo s = new ServiceInfo();
+                Element stElem = findElementByLocalName(svcElem, "serviceType");
+                if (stElem != null) s.serviceType = stElem.getTextContent().trim();
+                Element scElem = findElementByLocalName(svcElem, "controlURL");
+                if (scElem != null) {
+                    s.controlUrl = resolveUrl(device.baseUrl, scElem.getTextContent().trim());
                 }
-                eventType = parser.next();
+                device.services.add(s);
+                if (s.serviceType != null && s.serviceType.toLowerCase().contains("contentdirectory")) {
+                    device.controlUrl = s.controlUrl;
+                }
             }
 
             if (device.controlUrl == null) {
@@ -473,9 +512,8 @@ public class MobileLinkClient {
                     }
                 }
             }
-
             if (device.controlUrl == null) {
-                device.controlUrl = device.baseUrl + "/upnp/control/ContentDirectory";
+                device.controlUrl = device.baseUrl + "/smp_7_";
             }
 
             return device;
@@ -503,232 +541,63 @@ public class MobileLinkClient {
     }
 
     // =========================================================================
-    // KEEPALIVE ENGINE (Pure MobileLink: UDP M-SEARCH + BrowseMetadata Ping)
+    // SESSION MANAGEMENT (Zero socket polling - camera socket-silent between actions)
     // =========================================================================
 
-    private static volatile DatagramSocket ssdpSocket;
-    private static volatile Thread ssdpThread;
-    private static ScheduledExecutorService keepAliveExecutor;
-
     public static synchronized void startKeepAlive(Context context, DeviceInfo device) {
-        stopKeepAlive();
+        // Zero keepalive / Zero background polling (matching SamsungCameraDownloader).
+        // Sending continuous heartbeats crashes Samsung camera's tiny VxWorks socket table!
         appContext = context.getApplicationContext();
         activeDevice = device;
-        final DeviceInfo dev = device;
-
-        Log.i(TAG, "Starting pure MobileLink session for " + device.baseUrl);
-
-        // 1. Initial description handshake
-        Executors.newSingleThreadExecutor().execute(new Runnable() {
-            @Override
-            public void run() {
-                sendDescriptionHandshake(dev);
-            }
-        });
-
-        // 2. Heartbeat: Sends UDP M-SEARCH to 239.255.255.250:1900 every 1.5 seconds.
-        // Purely UDP - does NOT tie up the camera's HTTP socket pool.
-        ssdpThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                ssdpHeartbeatLoop(dev);
-            }
-        }, "MobileLink-SSDP-Heartbeat");
-        ssdpThread.setDaemon(true);
-        ssdpThread.start();
-
-        // 3. Periodic lightweight browse ping every 10 seconds ONLY when NOT downloading
-        keepAliveExecutor = Executors.newSingleThreadScheduledExecutor();
-        keepAliveExecutor.scheduleWithFixedDelay(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    // NEVER send HTTP pings to camera while a photo download is active!
-                    if (isDownloading.get()) return;
-
-                    if (activeDevice != null) {
-                        sendDescriptionHandshake(activeDevice);
-                        sendBrowseHeartbeatPing(activeDevice);
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "MobileLink keepalive tick warning: " + e.getMessage());
-                }
-            }
-        }, 4000, 10000, TimeUnit.MILLISECONDS);
+        Log.i(TAG, "MobileLink connected to " + device.baseUrl + " (Socket-silent mode active)");
     }
 
     public static synchronized void stopKeepAlive() {
-        if (keepAliveExecutor != null) {
-            try { keepAliveExecutor.shutdownNow(); } catch (Exception ignored) {}
-            keepAliveExecutor = null;
-        }
-        Thread t = ssdpThread;
-        ssdpThread = null;
-        if (t != null) t.interrupt();
-        DatagramSocket s = ssdpSocket;
-        ssdpSocket = null;
-        if (s != null) {
-            try { s.close(); } catch (Exception ignored) {}
-        }
         activeDevice = null;
     }
 
-    private static void ssdpHeartbeatLoop(DeviceInfo device) {
-        String msg = "M-SEARCH * HTTP/1.1\r\n" +
-                "HOST: 239.255.255.250:1900\r\n" +
-                "MAN: \"ssdp:discover\"\r\n" +
-                "MX: 2\r\n" +
-                "ST: ssdp:all\r\n\r\n";
-        byte[] bytes = msg.getBytes(StandardCharsets.UTF_8);
-        InetAddress cameraHost = null;
-        try {
-            cameraHost = InetAddress.getByName(new URL(device.baseUrl).getHost());
-        } catch (Exception ignored) {}
-
-        byte[] rx = new byte[2048];
-        while (Thread.currentThread() == ssdpThread) {
-            try {
-                DatagramSocket s = ssdpSocket;
-                if (s == null || s.isClosed()) {
-                    s = new DatagramSocket();
-                    if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                        try { activeWifiNetwork.bindSocket(s); } catch (Exception ignored) {}
-                    }
-                    s.setSoTimeout(300);
-                    ssdpSocket = s;
-                }
-                s.send(new DatagramPacket(bytes, bytes.length, InetAddress.getByName("239.255.255.250"), 1900));
-                if (cameraHost != null) {
-                    s.send(new DatagramPacket(bytes, bytes.length, cameraHost, 1900));
-                }
-                long until = System.currentTimeMillis() + 1500;
-                while (System.currentTimeMillis() < until && Thread.currentThread() == ssdpThread) {
-                    try {
-                        s.receive(new DatagramPacket(rx, rx.length));
-                    } catch (SocketTimeoutException ignored) {}
-                }
-            } catch (Exception e) {
-                if (Thread.currentThread() != ssdpThread) break;
-                DatagramSocket s = ssdpSocket;
-                ssdpSocket = null;
-                if (s != null) try { s.close(); } catch (Exception ignored) {}
-                try { Thread.sleep(1500); } catch (InterruptedException ie) { break; }
-            }
-        }
-    }
-
-    private static void sendDescriptionHandshake(DeviceInfo device) {
-        if (device == null || device.locationUrl == null) return;
-        try {
-            URL url = new URL(device.locationUrl);
-            HttpURLConnection conn = openConnection(url);
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(1500);
-            conn.setReadTimeout(1500);
-            conn.setRequestProperty("User-Agent", getUserAgent());
-            conn.setRequestProperty("Connection", "close");
-            conn.getResponseCode();
-            conn.disconnect();
-        } catch (Exception ignored) {}
-    }
-
-    private static void sendBrowseHeartbeatPing(DeviceInfo device) {
-        if (device == null || device.controlUrl == null) return;
-        try {
-            String soapRequest =
-                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
-                    "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
-                    "  <s:Body>\r\n" +
-                    "    <u:Browse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">\r\n" +
-                    "      <ObjectID>0</ObjectID>\r\n" +
-                    "      <BrowseFlag>BrowseMetadata</BrowseFlag>\r\n" +
-                    "      <Filter>@id</Filter>\r\n" +
-                    "      <StartingIndex>0</StartingIndex>\r\n" +
-                    "      <RequestedCount>1</RequestedCount>\r\n" +
-                    "      <SortCriteria></SortCriteria>\r\n" +
-                    "    </u:Browse>\r\n" +
-                    "  </s:Body>\r\n" +
-                    "</s:Envelope>";
-
-            URL url = new URL(device.controlUrl);
-            HttpURLConnection conn = openConnection(url);
-            conn.setRequestMethod("POST");
-            conn.setConnectTimeout(1500);
-            conn.setReadTimeout(1500);
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
-            conn.setRequestProperty("SOAPACTION", "\"urn:schemas-upnp-org:service:ContentDirectory:1#Browse\"");
-            conn.setRequestProperty("User-Agent", getUserAgent());
-            conn.setRequestProperty("Connection", "close");
-
-            byte[] b = soapRequest.getBytes(StandardCharsets.UTF_8);
-            conn.setRequestProperty("Content-Length", String.valueOf(b.length));
-            OutputStream os = conn.getOutputStream();
-            os.write(b);
-            os.flush();
-            os.close();
-
-            conn.getResponseCode();
-            conn.disconnect();
-        } catch (Exception ignored) {}
-    }
-
     // =========================================================================
-    // PHOTO BROWSING & BFS DIRECTORY TRAVERSAL
+    // PHOTO BROWSING: Pure Recursive DFS Tree Traversal (ObjectID="0")
     // =========================================================================
 
     public static List<PhotoItem> browsePhotos(DeviceInfo device) throws Exception {
-        List<PhotoItem> allPhotos = new ArrayList<>();
         if (device == null || device.controlUrl == null) {
             throw new IllegalArgumentException("Invalid device or control URL");
         }
+        List<PhotoItem> allPhotos = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
 
-        Queue<String> containerQueue = new ArrayDeque<>();
-        Set<String> visitedContainers = new HashSet<>();
+        Log.i(TAG, "Starting recursive photo browse for: " + device.controlUrl);
 
-        // Start BFS at root container "0"
-        containerQueue.add("0");
-        visitedContainers.add("0");
+        // Start DFS at root container "0" (matching SamsungCameraDownloader)
+        browseRecursive(device, "0", allPhotos, visited, 0);
 
-        Log.i(TAG, "Starting MobileLink photo browse for: " + device.baseUrl);
-
-        while (!containerQueue.isEmpty()) {
-            String containerId = containerQueue.poll();
-            List<String> subContainers = new ArrayList<>();
-            browseContainer(device, containerId, allPhotos, subContainers);
-            for (String sub : subContainers) {
-                if (sub != null && !sub.isEmpty() && visitedContainers.add(sub)) {
-                    containerQueue.add(sub);
-                }
-            }
-        }
-
-        // Fallback containers if root container "0" returned 0 items
-        if (allPhotos.isEmpty() && visitedContainers.size() <= 1) {
-            String[] fallbackContainers = new String[]{"1", "DCIM", "ALL", "100", "0/0", "0/1"};
-            for (String fbId : fallbackContainers) {
-                if (visitedContainers.add(fbId)) {
-                    List<String> sub = new ArrayList<>();
-                    browseContainer(device, fbId, allPhotos, sub);
-                    for (String s : sub) {
-                        if (visitedContainers.add(s)) {
-                            browseContainer(device, s, allPhotos, null);
-                        }
-                    }
+        // Fallback if root container "0" returned 0 items
+        if (allPhotos.isEmpty() && visited.size() <= 1) {
+            String[] fallbacks = new String[]{"1", "DCIM", "ALL", "100", "0/0", "0/1"};
+            for (String fbId : fallbacks) {
+                if (visited.add(fbId)) {
+                    browseRecursive(device, fbId, allPhotos, visited, 1);
                     if (!allPhotos.isEmpty()) break;
                 }
             }
         }
 
-        Log.i(TAG, "MobileLink total photos found: " + allPhotos.size());
+        Log.i(TAG, "MobileLink total files found on camera: " + allPhotos.size());
         return allPhotos;
     }
 
-    private static void browseContainer(DeviceInfo device, String objectId, List<PhotoItem> outPhotos, List<String> outSubContainers) {
+    private static void browseRecursive(DeviceInfo device, String objectId, List<PhotoItem> outPhotos, Set<String> visited, int depth) {
+        if (depth > 10) return;
+        if (visited.contains(objectId) && depth > 0) return;
+        visited.add(objectId);
+
+        Log.i(TAG, "Browsing container: " + objectId + " (depth " + depth + ")");
+
         int startingIndex = 0;
-        int requestedCount = 25; // 25 items per chunk (prevents camera buffer overflow)
+        int requestedCount = 200; // Efficient chunk size matching SamsungCameraDownloader
         boolean hasMore = true;
-        int maxLoops = 200;
+        int safetyLoops = 50;
 
         String serviceType = "urn:schemas-upnp-org:service:ContentDirectory:1";
         if (device.services != null) {
@@ -740,7 +609,9 @@ public class MobileLinkClient {
             }
         }
 
-        while (hasMore && maxLoops-- > 0) {
+        List<String> subContainers = new ArrayList<>();
+
+        while (hasMore && safetyLoops-- > 0) {
             try {
                 String soapRequest =
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
@@ -760,12 +631,13 @@ public class MobileLinkClient {
                 URL url = new URL(device.controlUrl);
                 HttpURLConnection conn = openConnection(url);
                 conn.setRequestMethod("POST");
-                conn.setConnectTimeout(6000);
-                conn.setReadTimeout(12000);
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(15000);
                 conn.setDoOutput(true);
                 conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
                 conn.setRequestProperty("SOAPACTION", "\"" + serviceType + "#Browse\"");
                 conn.setRequestProperty("User-Agent", getUserAgent());
+                conn.setRequestProperty("Connection", "close");
 
                 byte[] bodyBytes = soapRequest.getBytes(StandardCharsets.UTF_8);
                 conn.setRequestProperty("Content-Length", String.valueOf(bodyBytes.length));
@@ -781,25 +653,20 @@ public class MobileLinkClient {
                     String responseXml = readStreamToString(in);
                     conn.disconnect();
 
-                    int numberReturned = extractIntFromXml(responseXml, "NumberReturned");
-                    int totalMatches = extractIntFromXml(responseXml, "TotalMatches");
-
                     String didlXml = extractResultFromSoap(responseXml);
                     if (didlXml != null && !didlXml.isEmpty()) {
-                        int beforeItemsCount = outPhotos.size();
-                        parseDidlLite(device.baseUrl, didlXml, outPhotos, outSubContainers);
-                        int addedItems = outPhotos.size() - beforeItemsCount;
+                        int beforeCount = outPhotos.size();
+                        parseDidlLiteDom(device.baseUrl, didlXml, outPhotos, subContainers);
+                        int added = outPhotos.size() - beforeCount;
 
-                        int progressStep = numberReturned > 0 ? numberReturned : addedItems;
-                        if (progressStep <= 0) {
+                        int numberReturned = extractIntFromXml(responseXml, "NumberReturned");
+                        int totalMatches = extractIntFromXml(responseXml, "TotalMatches");
+
+                        int step = (numberReturned > 0) ? numberReturned : added;
+                        if (step <= 0 || step < requestedCount || (totalMatches > 0 && startingIndex + step >= totalMatches)) {
                             hasMore = false;
                         } else {
-                            startingIndex += progressStep;
-                            if (totalMatches > 0 && startingIndex >= totalMatches) {
-                                hasMore = false;
-                            } else if (numberReturned > 0 && numberReturned < requestedCount) {
-                                hasMore = false;
-                            }
+                            startingIndex += step;
                         }
                     } else {
                         hasMore = false;
@@ -809,8 +676,15 @@ public class MobileLinkClient {
                     hasMore = false;
                 }
             } catch (Exception e) {
-                Log.w(TAG, "Error browsing container " + objectId + ": " + e.getMessage());
+                Log.w(TAG, "Error browsing objectId=" + objectId + ": " + e.getMessage());
                 hasMore = false;
+            }
+        }
+
+        // Recursively browse subcontainers
+        for (String subId : subContainers) {
+            if (!visited.contains(subId)) {
+                browseRecursive(device, subId, outPhotos, visited, depth + 1);
             }
         }
     }
@@ -818,15 +692,35 @@ public class MobileLinkClient {
     private static String extractResultFromSoap(String soapResponse) {
         if (soapResponse == null || soapResponse.isEmpty()) return null;
         try {
+            // First check DOM Result tag using localName traversal
+            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+            dbf.setNamespaceAware(false);
+            Document doc = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(soapResponse)));
+            Element resElem = findElementByLocalName(doc.getDocumentElement(), "Result");
+            if (resElem != null) {
+                String text = resElem.getTextContent();
+                if (text != null && !text.trim().isEmpty()) {
+                    String clean = text.trim();
+                    if (clean.startsWith("<![CDATA[") && clean.endsWith("]]>")) {
+                        clean = clean.substring(9, clean.length() - 3).trim();
+                    }
+                    return clean;
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // Fallback regex if DOM parsing of SOAP envelope failed
+        try {
             Pattern p = Pattern.compile("<(?:[a-zA-Z0-9_-]+:)?Result\\b[^>]*>([\\s\\S]*?)</(?:[a-zA-Z0-9_-]+:)?Result>", Pattern.CASE_INSENSITIVE);
             Matcher m = p.matcher(soapResponse);
             if (m.find()) {
-                return unescapeXml(m.group(1));
-            }
-            Pattern pEsc = Pattern.compile("&lt;(?:[a-zA-Z0-9_-]+:)?Result\\b[^&]*&gt;([\\s\\S]*?)&lt;/(?:[a-zA-Z0-9_-]+:)?Result&gt;", Pattern.CASE_INSENSITIVE);
-            Matcher mEsc = pEsc.matcher(soapResponse);
-            if (mEsc.find()) {
-                return unescapeXml(mEsc.group(1));
+                String raw = m.group(1).trim();
+                if (raw.startsWith("<![CDATA[") && raw.endsWith("]]>")) {
+                    raw = raw.substring(9, raw.length() - 3).trim();
+                } else {
+                    raw = unescapeXml(raw);
+                }
+                return raw;
             }
             if (soapResponse.contains("<DIDL-Lite") || soapResponse.contains("<didl-lite")) {
                 int start = soapResponse.indexOf("<DIDL-Lite");
@@ -862,98 +756,154 @@ public class MobileLinkClient {
         return -1;
     }
 
-    private static void parseDidlLite(String baseUrl, String didlXml, List<PhotoItem> outPhotos, List<String> outSubContainers) {
+    private static void parseDidlLiteDom(String baseUrl, String didlXml, List<PhotoItem> outPhotos, List<String> outSubContainers) {
         try {
-            XmlPullParserFactory factory = XmlPullParserFactory.newInstance();
-            factory.setNamespaceAware(false);
-            XmlPullParser parser = factory.newPullParser();
-            parser.setInput(new StringReader(didlXml));
+            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+            dbf.setNamespaceAware(false);
+            Document doc = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(didlXml)));
 
-            int eventType = parser.getEventType();
-            PhotoItem currentItem = null;
-            String currentTag = "";
-            String tempResUrl = null;
-            String tempProtocolInfo = null;
-            long tempResSize = 0;
-
-            while (eventType != XmlPullParser.END_DOCUMENT) {
-                if (eventType == XmlPullParser.START_TAG) {
-                    currentTag = parser.getName();
-                    if ("container".equalsIgnoreCase(currentTag)) {
-                        String cId = parser.getAttributeValue(null, "id");
-                        if (cId != null && outSubContainers != null) {
-                            outSubContainers.add(cId);
-                        }
-                    } else if ("item".equalsIgnoreCase(currentTag)) {
-                        currentItem = new PhotoItem();
-                        String itemId = parser.getAttributeValue(null, "id");
-                        currentItem.setId(itemId);
-                    } else if ("res".equalsIgnoreCase(currentTag) && currentItem != null) {
-                        tempProtocolInfo = parser.getAttributeValue(null, "protocolInfo");
-                        String sizeStr = parser.getAttributeValue(null, "size");
-                        try {
-                            if (sizeStr != null && !sizeStr.isEmpty()) {
-                                tempResSize = Long.parseLong(sizeStr.trim());
-                            }
-                        } catch (Exception ignored) {}
-                    }
-                } else if (eventType == XmlPullParser.TEXT) {
-                    String text = parser.getText().trim();
-                    if (!text.isEmpty() && currentItem != null) {
-                        if ("dc:title".equalsIgnoreCase(currentTag) || "title".equalsIgnoreCase(currentTag)) {
-                            currentItem.setTitle(text);
-                        } else if ("dc:date".equalsIgnoreCase(currentTag) || "date".equalsIgnoreCase(currentTag)) {
-                            currentItem.setDate(text);
-                        } else if ("upnp:class".equalsIgnoreCase(currentTag)) {
-                            if (text.toLowerCase().contains("video")) {
-                                currentItem.setVideo(true);
-                            }
-                        } else if ("res".equalsIgnoreCase(currentTag)) {
-                            tempResUrl = text;
-                        }
-                    }
-                } else if (eventType == XmlPullParser.END_TAG) {
-                    String endTag = parser.getName();
-                    if ("res".equalsIgnoreCase(endTag) && currentItem != null && tempResUrl != null) {
-                        String resolved = resolveUrl(baseUrl, tempResUrl);
-                        boolean isThumb = false;
-                        if (tempProtocolInfo != null) {
-                            String lowerProto = tempProtocolInfo.toLowerCase();
-                            if (lowerProto.contains("jpeg_sm") || lowerProto.contains("jpeg_tn") || lowerProto.contains("thumb")) {
-                                isThumb = true;
-                            }
-                        }
-                        if (isThumb) {
-                            if (currentItem.getThumbUrl() == null) currentItem.setThumbUrl(resolved);
-                        } else {
-                            if (currentItem.getFullUrl() == null) {
-                                currentItem.setFullUrl(resolved);
-                                if (tempResSize > 0) currentItem.setSizeBytes(tempResSize);
-                            }
-                        }
-                        tempResUrl = null;
-                        tempProtocolInfo = null;
-                        tempResSize = 0;
-                    } else if ("item".equalsIgnoreCase(endTag) && currentItem != null) {
-                        if (currentItem.getFullUrl() != null) {
-                            if (currentItem.getThumbUrl() == null) {
-                                currentItem.setThumbUrl(currentItem.getFullUrl());
-                            }
-                            outPhotos.add(currentItem);
-                        }
-                        currentItem = null;
-                    }
-                    currentTag = "";
+            // 1. Containers
+            List<Element> containers = new ArrayList<>();
+            findAllElementsByLocalName(doc.getDocumentElement(), "container", containers);
+            for (Element c : containers) {
+                String cid = c.getAttribute("id");
+                if (cid != null && !cid.isEmpty() && outSubContainers != null && !outSubContainers.contains(cid)) {
+                    outSubContainers.add(cid);
+                    Log.i(TAG, "Found container in DIDL: " + cid);
                 }
-                eventType = parser.next();
+            }
+
+            // 2. Items (photos / videos)
+            List<Element> items = new ArrayList<>();
+            findAllElementsByLocalName(doc.getDocumentElement(), "item", items);
+            for (Element it : items) {
+                PhotoItem photo = new PhotoItem();
+                photo.setId(it.getAttribute("id"));
+
+                // Title (matches <title>, <dc:title>)
+                Element titleElem = findElementByLocalName(it, "title");
+                String title = (titleElem != null) ? titleElem.getTextContent().trim() : "";
+
+                // Date (matches <date>, <dc:date>)
+                Element dateElem = findElementByLocalName(it, "date");
+                String date = (dateElem != null) ? dateElem.getTextContent().trim() : "";
+                photo.setDate(date);
+
+                // Class (matches <class>, <upnp:class>)
+                Element classElem = findElementByLocalName(it, "class");
+                String upnpClass = (classElem != null) ? classElem.getTextContent().trim().toLowerCase() : "";
+                if (upnpClass.contains("video")) {
+                    photo.setVideo(true);
+                }
+
+                // Resources (<res>)
+                List<Element> resList = new ArrayList<>();
+                findAllElementsByLocalName(it, "res", resList);
+                String bestFullUrl = null;
+                long bestSize = 0;
+                String bestMime = null;
+                String bestThumbUrl = null;
+
+                for (Element resElem : resList) {
+                    String resUrl = resElem.getTextContent().trim();
+                    if (resUrl.isEmpty()) continue;
+                    String fullResUrl = resolveUrl(baseUrl, resUrl);
+
+                    String pi = resElem.getAttribute("protocolInfo");
+                    if (pi == null) pi = "";
+                    String piLower = pi.toLowerCase();
+
+                    long size = 0;
+                    String szStr = resElem.getAttribute("size");
+                    if (szStr != null && !szStr.isEmpty()) {
+                        try { size = Long.parseLong(szStr.trim()); } catch (Exception ignored) {}
+                    }
+
+                    String mime = "";
+                    if (pi.contains(":")) {
+                        String[] parts = pi.split(":");
+                        if (parts.length >= 3) mime = parts[2].trim();
+                    }
+
+                    // DLNA thumbnail identification matching SamsungCameraDownloader markers
+                    boolean isThumb = piLower.contains("jpeg_tn") || piLower.contains("jpeg_sm") ||
+                                      piLower.contains("png_tn")  || piLower.contains("png_sm") ||
+                                      piLower.contains("_tn")     || piLower.contains("_sm") ||
+                                      piLower.contains("thumb");
+
+                    if (isThumb) {
+                        if (bestThumbUrl == null) bestThumbUrl = fullResUrl;
+                    } else {
+                        if (bestFullUrl == null || size > bestSize) {
+                            bestFullUrl = fullResUrl;
+                            bestSize = size;
+                            bestMime = mime;
+                        }
+                    }
+                }
+
+                if (bestFullUrl == null && bestThumbUrl != null) {
+                    bestFullUrl = bestThumbUrl;
+                }
+
+                if (bestFullUrl != null) {
+                    // Ensure valid extension (mapping MIME types matching SamsungCameraDownloader)
+                    String finalName = ensureExtension(title, bestMime, bestFullUrl);
+                    photo.setTitle(finalName);
+                    photo.setFullUrl(bestFullUrl);
+                    photo.setSizeBytes(bestSize);
+
+                    if (bestThumbUrl != null) {
+                        photo.setThumbUrl(bestThumbUrl);
+                    } else {
+                        photo.setThumbUrl(bestFullUrl);
+                    }
+
+                    if (photo.isVideo() || (bestMime != null && bestMime.toLowerCase().contains("video"))) {
+                        photo.setVideo(true);
+                    }
+
+                    outPhotos.add(photo);
+                }
             }
         } catch (Exception e) {
-            Log.w(TAG, "parseDidlLite XML parse warning: " + e.getMessage());
+            Log.w(TAG, "parseDidlLiteDom error: " + e.getMessage());
         }
     }
 
+    public static String ensureExtension(String title, String mime, String url) {
+        if (title == null || title.trim().isEmpty()) {
+            title = "SAM_" + System.currentTimeMillis();
+        }
+        String lastPart = title;
+        int slash = lastPart.lastIndexOf('/');
+        if (slash >= 0) lastPart = lastPart.substring(slash + 1);
+
+        if (lastPart.contains(".")) {
+            return title;
+        }
+
+        String ext = null;
+        if (mime != null) {
+            ext = MIME_EXT.get(mime.toLowerCase().trim());
+        }
+        if (ext == null && url != null) {
+            String cleanUrl = url;
+            int q = cleanUrl.indexOf('?');
+            if (q >= 0) cleanUrl = cleanUrl.substring(0, q);
+            int dot = cleanUrl.lastIndexOf('.');
+            if (dot >= 0 && dot > cleanUrl.lastIndexOf('/')) {
+                ext = cleanUrl.substring(dot).toLowerCase();
+            }
+        }
+        if (ext == null) {
+            ext = ".jpg";
+        }
+        return title + ext;
+    }
+
     // =========================================================================
-    // DOWNLOAD ENGINE (Zero-Traffic Collision, Clean MediaStore Export)
+    // DOWNLOAD ENGINE (Zero-Collision, Deduplication & MediaStore Integration)
     // =========================================================================
 
     public static void downloadPhoto(Context context, PhotoItem item, File targetDir, DownloadProgressListener listener) throws Exception {
@@ -962,6 +912,25 @@ public class MobileLinkClient {
             String fileName = item.getTitle();
             if (fileName == null || fileName.isEmpty()) {
                 fileName = "NX_" + System.currentTimeMillis() + (item.isVideo() ? ".mp4" : ".jpg");
+            }
+
+            // Deduplication: Skip existing files (matching SamsungCameraDownloader)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                if (isMediaStoreFileExists(context, fileName)) {
+                    Log.i(TAG, "File already exists in MediaStore: " + fileName + " (skipping)");
+                    if (listener != null) listener.onProgress(item.getSizeBytes(), item.getSizeBytes(), 100);
+                    return;
+                }
+            } else {
+                if (targetDir == null) {
+                    targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "NX1000");
+                }
+                File existing = new File(targetDir, fileName);
+                if (existing.exists() && existing.length() > 0) {
+                    Log.i(TAG, "File already exists on disk: " + fileName + " (skipping)");
+                    if (listener != null) listener.onProgress(existing.length(), existing.length(), 100);
+                    return;
+                }
             }
 
             OutputStream out = null;
@@ -991,13 +960,15 @@ public class MobileLinkClient {
             }
 
             if (out == null) {
+                if (targetDir == null) {
+                    targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "NX1000");
+                }
                 if (!targetDir.exists()) targetDir.mkdirs();
                 fallbackFile = new File(targetDir, fileName);
                 out = new FileOutputStream(fallbackFile);
             }
 
-            // Download using HumbleHttpClient (Strict HTTP/1.0 raw socket, immediate close)
-            // This prevents VxWorks RTOS socket exhaustion and eliminates the 3-photo disconnect!
+            // Download using HumbleHttpClient (Strict HTTP/1.0, immediate socket close)
             final long itemSize = item.getSizeBytes();
             try {
                 HumbleHttpClient.download(activeWifiNetwork, item.getFullUrl(), getUserAgent(), out, new HumbleHttpClient.ProgressCallback() {
@@ -1035,6 +1006,30 @@ public class MobileLinkClient {
                 isDownloading.set(false);
             }
         }
+    }
+
+    private static boolean isMediaStoreFileExists(Context context, String fileName) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
+        try {
+            ContentResolver resolver = context.getContentResolver();
+            Uri collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            String selection = MediaStore.MediaColumns.DISPLAY_NAME + "=?";
+            String[] selectionArgs = new String[]{fileName};
+            Cursor cursor = resolver.query(collection, new String[]{MediaStore.MediaColumns._ID}, selection, selectionArgs, null);
+            if (cursor != null) {
+                boolean exists = cursor.moveToFirst();
+                cursor.close();
+                if (exists) return true;
+            }
+            Uri vidCollection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            cursor = resolver.query(vidCollection, new String[]{MediaStore.MediaColumns._ID}, selection, selectionArgs, null);
+            if (cursor != null) {
+                boolean exists = cursor.moveToFirst();
+                cursor.close();
+                if (exists) return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     private static String extractHeader(String response, String headerName) {

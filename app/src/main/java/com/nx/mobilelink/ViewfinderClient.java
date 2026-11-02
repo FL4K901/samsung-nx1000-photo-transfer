@@ -235,11 +235,13 @@ public class ViewfinderClient {
                 for (String ip : discovered) {
                     if (!candidateIps.contains(ip)) candidateIps.add(ip);
                 }
+                if (!candidateIps.contains("192.168.107.1")) candidateIps.add("192.168.107.1");
+                if (!candidateIps.contains("192.168.49.1")) candidateIps.add("192.168.49.1");
 
                 // Detect active camera IP
                 String cameraIp = null;
                 for (String ip : candidateIps) {
-                    if (isPortOpen(ip, 7679, 400) || isPortOpen(ip, 7788, 400) || isPortOpen(ip, 52235, 400)) {
+                    if (isPortOpen(ip, 7679, 400) || isPortOpen(ip, 7788, 400) || isPortOpen(ip, 7676, 400) || isPortOpen(ip, 52235, 400)) {
                         cameraIp = ip;
                         Log.i(TAG, "Detected active RVF camera IP: " + cameraIp);
                         break;
@@ -292,6 +294,32 @@ public class ViewfinderClient {
                     udpSock.close();
                 } catch (Exception ignored) {}
 
+                // Also send handshake to port 7679 (/smp_2_, /smp_3_) as required by Samsung NX firmware
+                try {
+                    String req2 = "GET /smp_2_ HTTP/1.0\r\n" +
+                            "HOST: " + cameraIp + ":7679\r\n" +
+                            "User-Agent: " + ua + "\r\n" +
+                            "Access-Method: manual\r\n" +
+                            "HOST-Mac: " + rawMac + "\r\n" +
+                            "HOST-Address: " + localIp + "\r\n" +
+                            "HOST-port: " + localPort + "\r\n" +
+                            "Connection: close\r\n\r\n";
+                    sendRawHttpRequest(cameraIp, 7679, req2, 800);
+
+                    String req3 = "GET /smp_3_ HTTP/1.0\r\n" +
+                            "HOST: " + cameraIp + ":7679\r\n" +
+                            "User-Agent: " + ua + "\r\n" +
+                            "Access-Method: manual\r\n" +
+                            "HOST-Mac: " + rawMac + "\r\n" +
+                            "HOST-Address: " + localIp + "\r\n" +
+                            "HOST-port: " + localPort + "\r\n" +
+                            "Connection: close\r\n\r\n";
+                    sendRawHttpRequest(cameraIp, 7679, req3, 800);
+                    Log.i(TAG, "Port 7679 handshake sent");
+                } catch (Exception e) {
+                    Log.w(TAG, "Port 7679 handshake notice: " + e.getMessage());
+                }
+
                 // 2. Discover UPnP Description and Control Endpoints
                 discoverEndpoints(cameraIp);
 
@@ -308,8 +336,9 @@ public class ViewfinderClient {
 
                 boolean port7679Open = isPortOpen(cameraIp, 7679, 1000);
                 boolean port7788Open = isPortOpen(cameraIp, 7788, 1000);
+                boolean port7676Open = isPortOpen(cameraIp, 7676, 1000);
 
-                if (upnpConfirmed || port7679Open || port7788Open) {
+                if (upnpConfirmed || port7679Open || port7788Open || port7676Open) {
                     Log.i(TAG, "Remote Viewfinder connected! StreamURL=" + activeStreamUrl + ", ControlURL=" + activeControlUrl);
                     callback.onConnected(cameraIp);
                 } else {
@@ -324,9 +353,12 @@ public class ViewfinderClient {
      */
     private static void discoverEndpoints(String cameraIp) {
         activeEndpoints.clear();
-        int[] ports = new int[]{52235, 7676};
+        int[] ports = new int[]{7676, 52235};
         String[] paths = new String[]{
+                "/smp_6_",
                 "/description.xml",
+                "/smp_2_",
+                "/smp_4_",
                 "/smp_10_",
                 "/dmr/SamsungMRDesc.xml"
         };
@@ -367,23 +399,28 @@ public class ViewfinderClient {
         // Default fallbacks if XML probing did not return
         ServiceEndpoint ep1 = new ServiceEndpoint();
         ep1.serviceType = "urn:schemas-upnp-org:service:ConnectionManager:1";
-        ep1.controlUrl = "http://" + cameraIp + ":52235/upnp/control/ConnectionManager";
+        ep1.controlUrl = "http://" + cameraIp + ":7676/smp_7_";
         activeEndpoints.add(ep1);
 
         ServiceEndpoint ep2 = new ServiceEndpoint();
-        ep2.serviceType = "urn:schemas-upnp-org:service:ContentDirectory:1";
-        ep2.controlUrl = "http://" + cameraIp + ":52235/upnp/control/ContentDirectory";
+        ep2.serviceType = "urn:schemas-upnp-org:service:ConnectionManager:1";
+        ep2.controlUrl = "http://" + cameraIp + ":7676/smp_3_";
         activeEndpoints.add(ep2);
 
         ServiceEndpoint ep3 = new ServiceEndpoint();
-        ep3.serviceType = "urn:schemas-samsung-com:service:RemoteControl:1";
-        ep3.controlUrl = "http://" + cameraIp + ":52235/upnp/control/RemoteControl";
+        ep3.serviceType = "urn:schemas-upnp-org:service:ConnectionManager:1";
+        ep3.controlUrl = "http://" + cameraIp + ":52235/upnp/control/ConnectionManager";
         activeEndpoints.add(ep3);
 
         ServiceEndpoint ep4 = new ServiceEndpoint();
-        ep4.serviceType = "urn:schemas-upnp-org:service:ConnectionManager:1";
-        ep4.controlUrl = "http://" + cameraIp + ":7676/upnp/control/ConnectionManager";
+        ep4.serviceType = "urn:schemas-upnp-org:service:ContentDirectory:1";
+        ep4.controlUrl = "http://" + cameraIp + ":7676/smp_7_";
         activeEndpoints.add(ep4);
+
+        ServiceEndpoint ep5 = new ServiceEndpoint();
+        ep5.serviceType = "urn:schemas-samsung-com:service:RemoteControl:1";
+        ep5.controlUrl = "http://" + cameraIp + ":52235/upnp/control/RemoteControl";
+        activeEndpoints.add(ep5);
     }
 
     private static void parseEndpointsFromXml(String cameraIp, int port, String xml) {

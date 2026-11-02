@@ -79,6 +79,7 @@ public class MobileLinkActivity extends Activity {
     private boolean isScanning = false;
     private boolean isDownloading = false;
     private boolean allSelectedState = false;
+    private int scanRetryCount = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -270,6 +271,7 @@ public class MobileLinkActivity extends Activity {
                 mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
+                        scanRetryCount = 0;
                         connectedDevice = device;
                         MobileLinkClient.startKeepAlive(MobileLinkActivity.this, device);
                         updateStatusBanner();
@@ -289,20 +291,22 @@ public class MobileLinkActivity extends Activity {
                         btnScanCamera.setEnabled(true);
                         updateStatusBanner();
 
-                        if (connectedDevice == null && isConnectedToWifi()) {
-                            txtStatusBadge.setText("Waiting for camera approval... Scanning again");
+                        if (connectedDevice == null && isConnectedToWifi() && scanRetryCount < 3) {
+                            scanRetryCount++;
+                            txtStatusBadge.setText("Retrying camera discovery (" + scanRetryCount + "/3)...");
                             txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
                             txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
                             mainHandler.postDelayed(new Runnable() {
                                 @Override
                                 public void run() {
                                     if (connectedDevice == null && isConnectedToWifi() && !isScanning) {
-                                        Log.i(TAG, "Auto-retrying MobileLink discovery...");
+                                        Log.i(TAG, "Auto-retrying MobileLink discovery (" + scanRetryCount + "/3)...");
                                         startCameraScan(null, 0);
                                     }
                                 }
-                            }, 3000);
+                            }, 2500);
                         } else {
+                            scanRetryCount = 0;
                             Toast.makeText(MobileLinkActivity.this, error, Toast.LENGTH_LONG).show();
                         }
                     }
@@ -317,7 +321,8 @@ public class MobileLinkActivity extends Activity {
             public void run() {
                 try {
                     List<PhotoItem> loaded = null;
-                    for (int attempt = 1; attempt <= 5; attempt++) {
+                    final int maxAttempts = 20; // 30 seconds total waiting for user confirmation on camera LCD
+                    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                         try {
                             loaded = MobileLinkClient.browsePhotos(device);
                             if (loaded != null && !loaded.isEmpty()) {
@@ -326,11 +331,12 @@ public class MobileLinkActivity extends Activity {
                         } catch (Exception be) {
                             Log.w(TAG, "Browse attempt " + attempt + " error: " + be.getMessage());
                         }
-                        if (attempt < 5) {
+                        if (attempt < maxAttempts) {
+                            final int curAttempt = attempt;
                             mainHandler.post(new Runnable() {
                                 @Override
                                 public void run() {
-                                    txtStatusBadge.setText("Waiting for photos... (Confirm 'Yes' on camera)");
+                                    txtStatusBadge.setText("Waiting for photos... (Confirm 'Yes' on camera) [" + curAttempt + "/" + maxAttempts + "]");
                                 }
                             });
                             try { Thread.sleep(1500); } catch (InterruptedException ignored) { break; }
@@ -387,9 +393,14 @@ public class MobileLinkActivity extends Activity {
         Button btnCancel = dialogView.findViewById(R.id.dialog_ip_cancel);
         Button btnConnect = dialogView.findViewById(R.id.dialog_ip_connect);
 
-        String gw = MobileLinkClient.getWifiGatewayIp(this);
-        if (gw != null && !gw.isEmpty()) {
-            editIp.setText(gw);
+        List<String> ips = NetworkManager.getCandidateCameraIps(this);
+        if (ips != null && !ips.isEmpty()) {
+            editIp.setText(ips.get(0));
+        } else {
+            String gw = MobileLinkClient.getWifiGatewayIp(this);
+            if (gw != null && !gw.isEmpty()) {
+                editIp.setText(gw);
+            }
         }
 
         btnCancel.setOnClickListener(new View.OnClickListener() {

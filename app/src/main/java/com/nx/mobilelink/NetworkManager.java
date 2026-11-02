@@ -120,6 +120,7 @@ public class NetworkManager {
 
             NetworkRequest request = new NetworkRequest.Builder()
                     .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                     .build();
 
             globalNetworkCallback = new ConnectivityManager.NetworkCallback() {
@@ -276,7 +277,21 @@ public class NetworkManager {
         List<String> list = new ArrayList<>();
         bindProcessToWifi(context);
 
-        // 1. LinkProperties routes
+        String ssid = getCurrentWifiSsid(context);
+        boolean isCameraSsid = ssid != null && (
+                ssid.toUpperCase().contains("NX") ||
+                ssid.toUpperCase().contains("SEC_") ||
+                ssid.toUpperCase().contains("WB") ||
+                ssid.toUpperCase().contains("SM-") ||
+                ssid.toUpperCase().contains("DSC") ||
+                ssid.toUpperCase().contains("CAMERA"));
+
+        // If connected to a camera AP, 192.168.107.1 is the primary Samsung AP IP
+        if (isCameraSsid) {
+            list.add("192.168.107.1");
+        }
+
+        // 1. LinkProperties routes (gateway on TRANSPORT_WIFI)
         try {
             ConnectivityManager cm = (ConnectivityManager) context.getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -288,7 +303,7 @@ public class NetworkManager {
                             for (RouteInfo route : lp.getRoutes()) {
                                 if (route.hasGateway() && route.getGateway() != null) {
                                     String gw = route.getGateway().getHostAddress();
-                                    if (gw != null && !gw.equals("0.0.0.0") && !gw.isEmpty() && !list.contains(gw)) {
+                                    if (gw != null && !gw.equals("0.0.0.0") && !gw.isEmpty() && isSensibleCameraIp(gw) && !list.contains(gw)) {
                                         list.add(gw);
                                         Log.i(TAG, "Found camera IP from LinkProperties route: " + gw);
                                     }
@@ -300,39 +315,39 @@ public class NetworkManager {
             }
         } catch (Exception ignored) {}
 
-        // 2. DhcpInfo (gateway + serverAddress)
+        // 2. DhcpInfo (serverAddress + gateway)
         try {
             WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) {
                 DhcpInfo dhcp = wm.getDhcpInfo();
                 if (dhcp != null) {
-                    if (dhcp.gateway != 0) {
-                        int g = dhcp.gateway;
-                        String gw = (g & 0xFF) + "." + ((g >> 8) & 0xFF) + "." + ((g >> 16) & 0xFF) + "." + ((g >> 24) & 0xFF);
-                        if (!gw.equals("0.0.0.0") && !list.contains(gw)) {
-                            list.add(gw);
-                            Log.i(TAG, "Found camera IP from DhcpInfo gateway: " + gw);
-                        }
-                    }
                     if (dhcp.serverAddress != 0) {
                         int s = dhcp.serverAddress;
                         String sa = (s & 0xFF) + "." + ((s >> 8) & 0xFF) + "." + ((s >> 16) & 0xFF) + "." + ((s >> 24) & 0xFF);
-                        if (!sa.equals("0.0.0.0") && !list.contains(sa)) {
+                        if (!sa.equals("0.0.0.0") && isSensibleCameraIp(sa) && !list.contains(sa)) {
                             list.add(sa);
                             Log.i(TAG, "Found camera IP from DhcpInfo serverAddress: " + sa);
+                        }
+                    }
+                    if (dhcp.gateway != 0) {
+                        int g = dhcp.gateway;
+                        String gw = (g & 0xFF) + "." + ((g >> 8) & 0xFF) + "." + ((g >> 16) & 0xFF) + "." + ((g >> 24) & 0xFF);
+                        if (!gw.equals("0.0.0.0") && isSensibleCameraIp(gw) && !list.contains(gw)) {
+                            list.add(gw);
+                            Log.i(TAG, "Found camera IP from DhcpInfo gateway: " + gw);
                         }
                     }
                 }
             }
         } catch (Exception ignored) {}
 
-        // 3. Derived .1 from phone's IP
+        // 3. Derived .1 from phone's IP on Wi-Fi
         String localIp = getLocalIpAddress(context);
-        if (localIp != null && localIp.contains(".")) {
+        if (localIp != null && localIp.contains(".") && isSensibleCameraIp(localIp)) {
             int lastDot = localIp.lastIndexOf('.');
             if (lastDot > 0) {
                 String derived = localIp.substring(0, lastDot) + ".1";
-                if (!derived.equals("0.0.0.0") && !list.contains(derived)) {
+                if (!derived.equals("0.0.0.0") && isSensibleCameraIp(derived) && !list.contains(derived)) {
                     list.add(derived);
                     Log.i(TAG, "Derived camera IP from local subnet: " + derived);
                 }
@@ -345,5 +360,19 @@ public class NetworkManager {
         if (!list.contains("192.168.1.1")) list.add("192.168.1.1");
 
         return list;
+    }
+
+    private static boolean isSensibleCameraIp(String ip) {
+        if (ip == null || ip.isEmpty() || ip.equals("0.0.0.0")) return false;
+        if (ip.startsWith("127.") || ip.startsWith("169.254.")) return false;
+        if (ip.startsWith("192.168.107.") || ip.startsWith("192.168.49.") ||
+            ip.startsWith("192.168.1.") || ip.startsWith("192.168.0.")) {
+            return true;
+        }
+        // Exclude cellular carrier / mobile hotspot subnets
+        if (ip.startsWith("192.168.16.") || ip.startsWith("192.168.43.") || ip.startsWith("10.") || ip.startsWith("172.")) {
+            return false;
+        }
+        return true;
     }
 }
