@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) 2026 FL4K901. All rights reserved.
+ * SPDX-License-Identifier: MIT
+ *
+ * This software is licensed under the MIT License.
+ * See LICENSE file in the project root for full license terms.
+ */
+
 package com.nx.mobilelink;
 
 import android.content.ContentResolver;

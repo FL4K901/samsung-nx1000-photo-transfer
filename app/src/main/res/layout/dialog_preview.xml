@@ -28,7 +28,7 @@
         android:id="@+id/dialog_preview_info"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="גודל: 4.5 MB | תאריך: 2024-05-12"
+        android:text="Size: 4.5 MB | Date: 2024-05-12"
         android:textColor="@color/text_secondary"
         android:textSize="12sp"
         android:gravity="center"

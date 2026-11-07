@@ -107,7 +107,7 @@
                 android:layout_weight="0.9"
                 android:layout_marginLeft="6dp"
                 android:background="@drawable/button_secondary"
-                android:text="IP ישיר"
+                android:text="@string/btn_direct_ip"
                 android:textColor="@color/text_primary"
                 android:textSize="12sp" />
         </LinearLayout>
@@ -241,7 +241,7 @@
                     android:layout_height="48dp"
                     android:layout_marginTop="18dp"
                     android:background="@drawable/button_primary"
-                    android:text="סרוק וחבר למצלמה"
+                    android:text="@string/btn_scan"
                     android:textColor="#FFFFFF"
                     android:textSize="15sp"
                     android:textStyle="bold" />
@@ -282,7 +282,7 @@
             android:id="@+id/txt_download_status"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="מוריד תמונות..."
+            android:text="@string/downloading_photos"
             android:textColor="@color/ios_blue"
             android:textSize="13sp"
             android:textStyle="bold" />
@@ -328,7 +328,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="0 נבחרו"
+            android:text="0 selected"
             android:textColor="@color/text_secondary"
             android:textSize="13sp"
             android:gravity="center"
@@ -339,7 +339,7 @@
             android:layout_width="wrap_content"
             android:layout_height="38dp"
             android:background="@drawable/button_primary"
-            android:text="הורד נבחרים"
+            android:text="@string/btn_download_selected"
             android:textColor="#FFFFFF"
             android:textSize="13sp"
             android:textStyle="bold"

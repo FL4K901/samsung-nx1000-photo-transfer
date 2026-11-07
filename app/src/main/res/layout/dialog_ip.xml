@@ -39,7 +39,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="פורט (ריק = סריקה אוטומטית של פורטים 52235, 7676, 8080):"
+        android:text="Port (empty = auto-scan ports 52235, 7676, 8080):"
         android:textColor="@color/text_secondary"
         android:textSize="12sp"
         android:layout_marginTop="12dp" />

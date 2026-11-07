@@ -1,23 +1,25 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.4.2-blue.svg)](release/NX-MobileLink-v1.4.2.apk)
+[![Release](https://img.shields.io/badge/Release-v1.4.3-blue.svg)](release/NX-MobileLink-v1.4.3.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
-[![APK Size](https://img.shields.io/badge/APK%20Size-112%20KB-success.svg)](release/NX-MobileLink-v1.4.2.apk)
+[![Attribution](https://img.shields.io/badge/Legal-Attribution-orange.svg)](ATTRIBUTION.md)
+[![Security](https://img.shields.io/badge/Security-OWASP%20Hardened-brightgreen.svg)](README.md#security--hardening)
 
-Modern, open-source Android application for wireless photo and video transfer from **Samsung NX1000** (and compatible Samsung NX series cameras) to modern Android smartphones running **Android 7.0 through Android 14+**.
+Modern, open-source Android application for wireless photo/video transfer and live remote viewfinder from **Samsung NX1000** (and compatible Samsung NX series cameras) to modern Android smartphones running **Android 7.0 through Android 14+**.
 
 ---
 
 ## 📷 Overview & Background
 
-Samsung discontinued official app support for its Smart Camera ecosystem years ago. The legacy **Samsung MobileLink** and **Samsung Remote Viewfinder** applications on the Google Play Store are incompatible with modern Android versions due to:
+Samsung officially discontinued support for its Smart Camera ecosystem years ago. Legacy apps on the Google Play Store (**Samsung MobileLink** and **Samsung Remote Viewfinder**) fail on modern Android devices due to:
 * Deprecated network APIs (lack of modern `NetworkCallback` and process socket binding).
-* Strict cleartext HTTP restrictions in Android 9+.
-* Changes in Android scoped storage permissions (Android 13+ `READ_MEDIA_IMAGES`).
+* Strict cleartext HTTP restrictions introduced in Android 9+.
+* Changes in Android scoped storage permissions (Android 13+ `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO`).
 * Aggressive Android Wi-Fi handoff (disconnecting from camera APs that have no internet access).
+* VxWorks RTOS socket exhaustion on the camera due to modern Android HTTP/1.1 connection pooling.
 
-This project is a clean-room, reverse-engineered native Android solution that completely restores fast, stable, and seamless wireless photo transfer and remote viewfinder functionality.
+This project is a clean-room, reverse-engineered native Android solution that completely restores fast, stable, and seamless wireless photo transfer and live remote viewfinder control.
 
 ---
 
@@ -25,17 +27,34 @@ This project is a clean-room, reverse-engineered native Android solution that co
 
 - **Apple-Inspired Dark Mode Home Screen**: Clean, modern dark dashboard featuring an interactive Wi-Fi status capsule and modular cards for **MobileLink** and **Remote Viewfinder**.
 - **100% Modular Protocol Architecture**: Completely separates MobileLink and Remote Viewfinder into independent clients and activities, preventing cross-protocol interference or playback engine deadlocks.
-- **Pure UPnP/DLNA MobileLink Engine**: 
+- **Pure UPnP/DLNA MobileLink Engine**:
   - Speaks pure UPnP `ContentDirectory:1` with `SEC_DSC_<MAC>` identity.
   - Deep Recursive Folder Browsing (BFS) across multi-level SD card directories (`0` ➔ `Storage` ➔ `DCIM` ➔ `100_PHOTO`).
-  - Automated 5-stage approval retry polling while the user presses 'Yes' on the camera LCD.
+  - Direct automatic photo loading without artificial polling delays.
+  - Zero-collision downloading with automated deduplication and modern MediaStore integration (`Pictures/NX1000`).
   - Global atomic download lock with silent keepalive suspension during downloads, preventing socket congestion and camera disconnects.
 - **Dedicated Remote Viewfinder Engine**:
   - Full Mode Control integration on port 7788 (`/mode/control`) with `SEC_RVF_<MAC>` identity.
   - Dual-port reciprocal callback server (ports 7788 & 7792) to keep the camera LCD connected.
-  - Continuous MJPEG streaming pipeline from port 7679 (`/livestream.avi`) without socket aborts.
-  - Remote shutter trigger command.
-- **Ultra-Lightweight & Native**: Zero bloated third-party dependencies, built entirely using native Android APIs. The compiled, signed APK is only **~80 KB**!
+  - Continuous MJPEG streaming pipeline from port 7679 (`/livestream.avi`) with automatic reconnect.
+  - Remote shutter trigger command via UPnP SOAP `Shot` / `ShotWithGPS`.
+- **Ultra-Lightweight & Native**: Zero bloated third-party dependencies, built entirely using native Android APIs. The compiled, signed APK is only **~100 KB**!
+
+---
+
+## 🔒 Security & Hardening
+
+This application underwent a comprehensive OWASP security review and incorporates full defensive hardening:
+
+1. **Path Traversal Protection**: All downloaded file names are rigorously sanitized, stripping path traversal sequences (`..`, `/`, `\`), and enforced via canonical directory containment (`canonicalDest.getPath().startsWith(canonicalTarget.getPath())`).
+2. **Secure XML Parsers (Anti-XXE)**: All XML document parsers explicitly disable `DOCTYPE` declarations, external general entities, external parameter entities, external DTD loading, and entity expansion (`disallow-doctype-decl = true`).
+3. **DoS Prevention (Bounded Buffers & Threading)**:
+   - MJPEG live stream reader enforces a 5MB maximum frame size ceiling, discarding malformed streams.
+   - HTTP header reader caps line lengths at 8192 bytes against slowloris attacks.
+   - Local keep-alive callback server employs a bounded 4-thread `ExecutorService` pool instead of unbounded thread creation.
+4. **Data Privacy**: Backup extraction is explicitly disabled (`android:allowBackup="false"`).
+5. **SSRF Mitigation**: DLNA resource URLs are verified against the camera's base host and private subnets, rejecting loopback and arbitrary redirections.
+6. **SOAP Argument Sanitization**: All UPnP SOAP request parameters and XML attributes are strictly escaped against XML/SOAP injection.
 
 ---
 
@@ -43,7 +62,8 @@ This project is a clean-room, reverse-engineered native Android solution that co
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.4.2.apk](release/NX-MobileLink-v1.4.2.apk)**
+👉 **[Download NX-MobileLink-v1.4.3.apk](release/NX-MobileLink-v1.4.3.apk)**  
+*(Also available as [NX-MobileLink.apk](release/NX-MobileLink.apk))*
 
 1. Transfer or download the APK to your Android device.
 2. Open the file and allow "Install from Unknown Sources" if prompted.
@@ -55,32 +75,33 @@ You can download the pre-built, signed APK directly from this repository:
 
 ### 1. Home Screen
 When you launch the app, you will see the **NX Cam Link** dashboard:
-* **Wi-Fi Status Capsule**: Shows current Wi-Fi SSID and status dot (tap to open Wi-Fi settings).
+* **Wi-Fi Status Capsule**: Shows current Wi-Fi SSID and connection status dot (tap to open Wi-Fi settings).
 * **Card 1: MobileLink** (Green icon) ➔ Tap to browse and download photos/videos from SD card.
 * **Card 2: Remote Viewfinder** (Blue icon) ➔ Tap for live video stream and remote shutter control.
 
 ### 2. MobileLink Mode (Transfer Photos & Videos)
 1. On your Samsung NX camera, turn the mode dial to **Wi-Fi**.
 2. Select **MobileLink** ➔ choose **"Select files on smartphone"** or **"All files"**.
-3. **Important**: When the camera displays *"Allow connection from smartphone?"*, press **"Yes" (כן)** on the camera LCD.
-4. In the app, tap the **MobileLink** card and press **"סרוק וחבר מצלמה"**.
-5. Your photos load in a fast 3-column grid. Tap any photo for preview or select multiple files to download directly to your Android Gallery (`Downloads/NX1000`).
+3. In the app, tap the **MobileLink** card and press **"Connect Camera"**.
+4. The app binds to the camera's Wi-Fi network and automatically browses the SD card.
+5. Your photos load in a fast 3-column grid. Tap any photo for preview or select multiple files to download directly to your Android Gallery (`Pictures/NX1000`).
 
 ### 3. Remote Viewfinder Mode (Live Preview & Shutter)
 1. Turn the camera mode dial to **Wi-Fi** and select **Remote Viewfinder**.
-2. In the app, tap the **Remote Viewfinder** card and press **"התחבר למצלמה"**.
-3. The camera displays "Connected to smartphone", live preview streams to your phone screen, and you can tap the circular shutter button to capture photos remotely!
+2. Connect your phone's Wi-Fi to the camera network (e.g., `NX1000-...`).
+3. In the app, tap the **Remote Viewfinder** card and press **"Connect Camera"**.
+4. The camera displays "Connected to smartphone", live preview streams to your phone screen, and you can tap the circular shutter button to capture photos remotely!
 
 ---
 
 ## 🛠️ Building from Source
 
 ### Method A: One-Click PowerShell Build (Fastest, No Gradle Needed)
-Requires Android SDK build-tools and JDK 17+:
+Requires Android SDK build-tools 34+ and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with both v1 and v2 signature schemes in `release/NX-MobileLink-v1.4.2.apk`.
+The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.4.3.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -92,65 +113,49 @@ The output APK will be generated, zip-aligned, and signed with both v1 and v2 si
 
 ## 📋 Changelog
 
+### Version 1.4.3
+* **Comprehensive OWASP Security Hardening**:
+  - Remediated all 8 vulnerabilities identified in security triage (XXE, Path Traversal, Unbounded Buffers, Slowloris, Thread Exhaustion, Insecure Backup, SOAP Injection, and DLNA SSRF).
+  - Added filename sanitization and canonical directory confinement in `MobileLinkClient.java`.
+  - Added secure `DocumentBuilderFactory` with DOCTYPE and external entity disallowal.
+  - Added 5MB frame buffer limit in `ViewfinderClient.java` and 8KB header line limit in `HumbleHttpClient.java`.
+  - Replaced unbounded threads in `LocalRvfServer` with a fixed thread pool of 4 workers.
+  - Disabled `android:allowBackup`.
+* **100% English Internationalization**:
+  - Fully translated all remaining UI labels, buttons, dialogs, progress banners, and comments into English.
+* **Rights Preservation & Legal Attributions**:
+  - Added comprehensive [ATTRIBUTION.md](ATTRIBUTION.md) documenting trademarks, fair-use reverse-engineering rationale, and credits.
+  - Added SPDX-License-Identifier and Copyright headers across all Java source files.
+* **Streamlined Automatic DLNA Loading**:
+  - Eliminated artificial camera approval polling loops; photos now query and render automatically upon connection.
+
 ### Version 1.4.2
 * **Universal Process-Level Wi-Fi Binding (`NetworkManager`)**:
   - Solves the modern Android cellular data bypass bug where Android routes camera traffic to mobile data when connected to an AP with no internet.
-  - Synchronously scans `ConnectivityManager.getAllNetworks()` and executes `cm.bindProcessToNetwork()` across all activities (`MainActivity`, `MobileLinkActivity`, `ViewfinderActivity`).
+  - Synchronously scans `ConnectivityManager.getAllNetworks()` and executes `cm.bindProcessToNetwork()` across all activities.
 * **Multi-Source Camera IP Discovery**:
   - Automatically queries `LinkProperties.getRoutes()`, `DhcpInfo.gateway`, `DhcpInfo.serverAddress`, and derives subnet `.1` from the device's IP.
-  - Eliminates connection failures caused by non-standard gateway settings or zeroed DHCP gateway fields.
 * **Socket-Gentle Port Probing**:
-  - Replaced bulk parallel HTTP flood with fast 400ms TCP socket pre-checks on primary Samsung ports (**52235**, **7676**, **7679**, **7788**, **80**), protecting the camera's limited RTOS socket pool.
-* **Faster Viewfinder Handshake**:
-  - Instantaneous camera IP detection and UPnP endpoint discovery in under 400ms, eliminating the 15-second RVF camera shutdown timeout.
+  - Fast 400ms TCP socket pre-checks on primary Samsung ports (**52235**, **7676**, **7679**, **7788**, **80**), protecting the camera's RTOS socket pool.
 
 ### Version 1.4.1
-* **100% English UI**: Clean, professional internationalization across all views, strings, toasts, and dialogs.
 * **HumbleHttpClient Architecture (Socket Exhaustion Fix)**:
-  - Reverse-engineered from Samsung's legacy APK (`HumbleHttpClient.java`). Replaces Android's `HttpURLConnection` (which pools HTTP/1.1 keep-alive sockets) with raw single-purpose TCP sockets using strict `HTTP/1.0` headers and immediate socket closure.
+  - Reverse-engineered from Samsung's legacy APK (`HumbleHttpClient.java`). Replaces Android's `HttpURLConnection` with raw TCP sockets using strict `HTTP/1.0` headers and immediate socket closure.
   - Eliminates the VxWorks RTOS socket exhaustion bug that previously disconnected the Wi-Fi link after downloading ~3 photos.
-  - Pauses background thumbnail loading during full photo downloads to guarantee exclusive socket bandwidth.
 * **Samsung UPnP SOAP Remote Viewfinder Protocol**:
-  - Implements dynamic endpoint and stream discovery via UPnP SOAP `GetInfomation` / `GetInformation`.
-  - Camera LCD acknowledges connection immediately upon receiving `GetInfomation`, resetting the hardware auto-shutdown timer.
-  - Hardware shutter capture triggered via official UPnP SOAP `Shot` / `ShotWithGPS` action with automatic refocus and exposure lock.
-  - Continuous resilient MJPEG stream decoder with auto-reconnect and 2.5s keep-alive loop.
+  - Dynamic endpoint and stream discovery via UPnP SOAP `GetInfomation`.
+  - Hardware shutter capture triggered via UPnP SOAP `Shot` / `ShotWithGPS` action.
 
 ### Version 1.4.0
-* **Modular Dashboard Architecture**: Introduced an Apple Dark Mode Home Screen with separate interactive cards for **MobileLink** and **Remote Viewfinder**, allowing modular development and maintenance without cross-feature bugs.
-* **Complete Protocol Separation**:
-  - `MobileLinkClient.java`: Pure UPnP/DLNA with zero video stream probes or port 7788/7679 interference, permanently fixing camera freezes in MobileLink mode.
-  - `ViewfinderClient.java`: Dedicated Remote Viewfinder client with continuous MJPEG stream reader and Mode Control keepalive, fixing the "Network disconnected" error caused by socket aborts.
-* **Remote Shutter Trigger**: Added remote capture trigger for Remote Viewfinder.
-* **Build System Optimization**: Packaged classes for `d8` via jar to prevent Windows cmdline length overflows.
-
-### Version 1.3.1
-* **Download Traffic Isolation**: Pauses all background TCP keepalive pings during active photo/video downloads, eliminating TCP socket congestion on the camera's embedded web server and preventing unexpected "Network disconnected" errors during multi-file batch transfers.
-* **Batch Transfer State Management**: Added global atomic download lock spanning multi-photo batch queues with 400ms buffer flush delays between downloads.
-* **Lightweight Periodic Heartbeat**: Optimized idle keepalive to a single lightweight Mode Control ping every 8 seconds alongside UDP SSDP beacons.
-
-### Version 1.3.0
-* **Remote Viewfinder Mode Control**: Implemented port 7788 TCP/UDP Mode Control handshake (`/mode/control`), port 7679 stream touch (`/livestream.avi`), and dual-port reciprocal callback server (ports 7788 & 7792) so physical camera LCD displays "Connected" and resets the auto-off timer.
-* **MobileLink Approval Auto-Retry**: Added 5-stage polling retry with delay to automatically detect and load photos as soon as the user approves the connection on the camera LCD.
-* **Proactive Discovery Probes**: Sends Mode Control handshakes immediately during initial discovery scans.
-
-### Version 1.2.0
-* **Multi-level BFS directory traversal**: Recursively discovers sub-folders (`DCIM`, `100_PHOTO`) on SD card storage.
-* **DIDL-Lite XML parser overhaul**: Resilient regex extraction for escaped `<Result>` tags and fallback photo titles.
-* **Remote Viewfinder Keepalive**: Dedicated RVF handshake endpoints (`/smp_2`, `/smp_3`, `/smp_4`), RTSP `OPTIONS` ping (port 554), and TCP control pings (ports 50000–50002).
-* **Dual Scheme Signing**: Signed with both v1 (JAR) and v2/v3 (APK Signature Scheme) for broad Android compatibility.
-
-### Version 1.1.0
-* Apple iOS Dark Mode visual redesign with status badges and action cards.
-* Replaced copyrighted Samsung assets with a custom modern camera lens vector icon.
-* Direct IP dialog for connecting across custom subnets.
-
-### Version 1.0.0
-* Initial release with SSDP camera discovery, UPnP content browsing, and background photo downloads.
+* **Modular Dashboard Architecture**:
+  - Introduced Apple Dark Mode Home Screen with separate interactive cards for **MobileLink** and **Remote Viewfinder**.
+  - Complete protocol separation between `MobileLinkClient.java` and `ViewfinderClient.java`.
 
 ---
 
-## 📄 License
+## ⚖️ Legal Notice & Attribution
 
-This project is licensed under the [MIT License](LICENSE).
-Samsung and NX1000 are trademarks of Samsung Electronics Co., Ltd. This project is an independent community development and is not affiliated with or endorsed by Samsung.
+- **Copyright**: (c) 2026 FL4K901. All rights reserved.
+- **License**: Licensed under the [MIT License](LICENSE).
+- **Trademarks**: **Samsung**, **Samsung NX**, **NX1000**, **MobileLink**, and **Remote Viewfinder** are trademarks of **Samsung Electronics Co., Ltd.** This project is an independent community development and is not affiliated with, sponsored, or endorsed by Samsung.
+- **Third-Party Credits**: Special thanks to **Istvan Safar** ([SamsungCameraDownloader](https://github.com/IstvanSafar/SamsungCameraDownloader)) for open-source research and reference implementation of Samsung DLNA structures. See [ATTRIBUTION.md](ATTRIBUTION.md) for full details.

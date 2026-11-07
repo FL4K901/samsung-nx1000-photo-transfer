@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) 2026 FL4K901. All rights reserved.
+ * SPDX-License-Identifier: MIT
+ *
+ * This software is licensed under the MIT License.
+ * See LICENSE file in the project root for full license terms.
+ */
+
 package com.nx.mobilelink;
 
 import android.graphics.Bitmap;
@@ -25,7 +33,7 @@ import java.util.Map;
  * socket connection pooling. Samsung NX VxWorks RTOS HTTP server has a tiny
  * internal socket table (max 3-4 concurrent sockets). Pooling connections or sending
  * complex HTTP/1.1 headers rapidly exhausts the camera's socket descriptors,
- * causing the camera to drop Wi-Fi with "Network disconnected" (הרשת התנתקה)
+ * causing the camera to drop Wi-Fi with "Network disconnected"
  * after downloading exactly 3 photos!
  * 
  * HumbleHttpClient uses raw TCP sockets with strict HTTP/1.0 and immediate
