@@ -163,6 +163,8 @@ public class HumbleHttpClient {
         }
     }
 
+    private static final int MAX_HEADER_LINE_LENGTH = 8192;
+
     private static String readLine(InputStream in) throws Exception {
         ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
         int b;
@@ -174,6 +176,9 @@ public class HumbleHttpClient {
                 break; // LF ends line
             }
             baos.write(b);
+            if (baos.size() > MAX_HEADER_LINE_LENGTH) {
+                throw new java.io.IOException("HTTP header line exceeded maximum length (" + MAX_HEADER_LINE_LENGTH + " bytes)");
+            }
         }
         if (b == -1 && baos.size() == 0) {
             return null;

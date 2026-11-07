@@ -467,10 +467,54 @@ public class MobileLinkClient {
         }
     }
 
+    private static DocumentBuilderFactory createSecureDocumentBuilderFactory() {
+        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+        dbf.setNamespaceAware(false);
+        try {
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+            dbf.setXIncludeAware(false);
+            dbf.setExpandEntityReferences(false);
+        } catch (Exception ignored) {}
+        return dbf;
+    }
+
+    public static String escapeXml(String str) {
+        if (str == null) return "";
+        return str.replace("&", "&amp;")
+                  .replace("<", "&lt;")
+                  .replace(">", "&gt;")
+                  .replace("\"", "&quot;")
+                  .replace("'", "&apos;");
+    }
+
+    private static boolean isSafeCameraUrl(String baseUrl, String candidateUrl) {
+        if (candidateUrl == null || baseUrl == null) return false;
+        try {
+            URL base = new URL(baseUrl);
+            URL cand = new URL(candidateUrl);
+            String candHost = cand.getHost();
+            if (candHost == null || candHost.equalsIgnoreCase("localhost") || candHost.startsWith("127.") || candHost.equals("0.0.0.0")) {
+                return false;
+            }
+            if (candHost.equalsIgnoreCase(base.getHost())) {
+                return true;
+            }
+            if (candHost.startsWith("192.168.107.") || candHost.startsWith("192.168.49.") ||
+                candHost.startsWith("192.168.1.") || candHost.startsWith("192.168.0.")) {
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static DeviceInfo parseDeviceDescriptionXml(String locationUrl, String xml) {
         try {
-            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-            dbf.setNamespaceAware(false);
+            DocumentBuilderFactory dbf = createSecureDocumentBuilderFactory();
             Document doc = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
 
             DeviceInfo device = new DeviceInfo();
@@ -612,12 +656,14 @@ public class MobileLinkClient {
 
         while (hasMore && safetyLoops-- > 0) {
             try {
+                String safeObjectId = escapeXml(objectId);
+                String safeServiceType = escapeXml(serviceType);
                 String soapRequest =
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
                         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
                         "  <s:Body>\r\n" +
-                        "    <u:Browse xmlns:u=\"" + serviceType + "\">\r\n" +
-                        "      <ObjectID>" + objectId + "</ObjectID>\r\n" +
+                        "    <u:Browse xmlns:u=\"" + safeServiceType + "\">\r\n" +
+                        "      <ObjectID>" + safeObjectId + "</ObjectID>\r\n" +
                         "      <BrowseFlag>BrowseDirectChildren</BrowseFlag>\r\n" +
                         "      <Filter>*</Filter>\r\n" +
                         "      <StartingIndex>" + startingIndex + "</StartingIndex>\r\n" +
@@ -692,8 +738,7 @@ public class MobileLinkClient {
         if (soapResponse == null || soapResponse.isEmpty()) return null;
         try {
             // First check DOM Result tag using localName traversal
-            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-            dbf.setNamespaceAware(false);
+            DocumentBuilderFactory dbf = createSecureDocumentBuilderFactory();
             Document doc = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(soapResponse)));
             Element resElem = findElementByLocalName(doc.getDocumentElement(), "Result");
             if (resElem != null) {
@@ -757,8 +802,7 @@ public class MobileLinkClient {
 
     private static void parseDidlLiteDom(String baseUrl, String didlXml, List<PhotoItem> outPhotos, List<String> outSubContainers) {
         try {
-            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-            dbf.setNamespaceAware(false);
+            DocumentBuilderFactory dbf = createSecureDocumentBuilderFactory();
             Document doc = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(didlXml)));
 
             // 1. Containers
@@ -807,6 +851,10 @@ public class MobileLinkClient {
                     String resUrl = resElem.getTextContent().trim();
                     if (resUrl.isEmpty()) continue;
                     String fullResUrl = resolveUrl(baseUrl, resUrl);
+                    if (!isSafeCameraUrl(baseUrl, fullResUrl)) {
+                        Log.w(TAG, "Skipping untrusted resource URL: " + fullResUrl);
+                        continue;
+                    }
 
                     String pi = resElem.getAttribute("protocolInfo");
                     if (pi == null) pi = "";
@@ -870,6 +918,19 @@ public class MobileLinkClient {
         }
     }
 
+    public static String sanitizeFileName(String title, boolean isVideo) {
+        if (title == null || title.trim().isEmpty()) {
+            return "NX_" + System.currentTimeMillis() + (isVideo ? ".mp4" : ".jpg");
+        }
+        String clean = new File(title).getName();
+        clean = clean.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+        clean = clean.replace("..", "_");
+        if (clean.isEmpty() || clean.equals(".") || clean.equals("..")) {
+            clean = "NX_" + System.currentTimeMillis() + (isVideo ? ".mp4" : ".jpg");
+        }
+        return clean;
+    }
+
     public static String ensureExtension(String title, String mime, String url) {
         if (title == null || title.trim().isEmpty()) {
             title = "SAM_" + System.currentTimeMillis();
@@ -908,9 +969,18 @@ public class MobileLinkClient {
     public static void downloadPhoto(Context context, PhotoItem item, File targetDir, DownloadProgressListener listener) throws Exception {
         boolean wasDownloading = isDownloading.getAndSet(true);
         try {
-            String fileName = item.getTitle();
-            if (fileName == null || fileName.isEmpty()) {
-                fileName = "NX_" + System.currentTimeMillis() + (item.isVideo() ? ".mp4" : ".jpg");
+            String fileName = sanitizeFileName(item.getTitle(), item.isVideo());
+
+            if (targetDir == null) {
+                targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "NX1000");
+            }
+
+            // Path Traversal Mitigation: Enforce canonical containment
+            File destFile = new File(targetDir, fileName);
+            File canonicalTarget = targetDir.getCanonicalFile();
+            File canonicalDest = destFile.getCanonicalFile();
+            if (!canonicalDest.getPath().startsWith(canonicalTarget.getPath())) {
+                throw new SecurityException("Potential path traversal detected in file name: " + fileName);
             }
 
             // Deduplication: Skip existing files (matching SamsungCameraDownloader)
@@ -921,13 +991,9 @@ public class MobileLinkClient {
                     return;
                 }
             } else {
-                if (targetDir == null) {
-                    targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "NX1000");
-                }
-                File existing = new File(targetDir, fileName);
-                if (existing.exists() && existing.length() > 0) {
+                if (destFile.exists() && destFile.length() > 0) {
                     Log.i(TAG, "File already exists on disk: " + fileName + " (skipping)");
-                    if (listener != null) listener.onProgress(existing.length(), existing.length(), 100);
+                    if (listener != null) listener.onProgress(destFile.length(), destFile.length(), 100);
                     return;
                 }
             }
@@ -959,11 +1025,8 @@ public class MobileLinkClient {
             }
 
             if (out == null) {
-                if (targetDir == null) {
-                    targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "NX1000");
-                }
                 if (!targetDir.exists()) targetDir.mkdirs();
-                fallbackFile = new File(targetDir, fileName);
+                fallbackFile = destFile;
                 out = new FileOutputStream(fallbackFile);
             }
 

@@ -468,6 +468,15 @@ public class ViewfinderClient {
         }
     }
 
+    public static String escapeXml(String str) {
+        if (str == null) return "";
+        return str.replace("&", "&amp;")
+                  .replace("<", "&lt;")
+                  .replace(">", "&gt;")
+                  .replace("\"", "&quot;")
+                  .replace("'", "&apos;");
+    }
+
     /**
      * Executes UPnP SOAP action 'GetInfomation' (spelled GetInfomation or GetInformation).
      * Extracts StreamURL from <GETIPRESULT> and confirms session on camera LCD.
@@ -478,11 +487,13 @@ public class ViewfinderClient {
         for (ServiceEndpoint ep : activeEndpoints) {
             for (String action : actionNames) {
                 try {
+                    String safeServiceType = escapeXml(ep.serviceType);
+                    String safeAction = escapeXml(action);
                     String soap = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
                             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
                             "  <s:Body>\r\n" +
-                            "    <u:" + action + " xmlns:u=\"" + ep.serviceType + "\">\r\n" +
-                            "    </u:" + action + ">\r\n" +
+                            "    <u:" + safeAction + " xmlns:u=\"" + safeServiceType + "\">\r\n" +
+                            "    </u:" + safeAction + ">\r\n" +
                             "  </s:Body>\r\n" +
                             "</s:Envelope>";
 
@@ -597,10 +608,11 @@ public class ViewfinderClient {
                 // 1. UPnP GetInfomation ping (Keeps camera from LCD disconnect timeout)
                 if (activeControlUrl != null && activeServiceType != null) {
                     try {
+                        String safeServiceType = escapeXml(activeServiceType);
                         String soap = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
                                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
                                 "  <s:Body>\r\n" +
-                                "    <u:GetInfomation xmlns:u=\"" + activeServiceType + "\"/>\r\n" +
+                                "    <u:GetInfomation xmlns:u=\"" + safeServiceType + "\"/>\r\n" +
                                 "  </s:Body>\r\n" +
                                 "</s:Envelope>";
                         postSoap(activeControlUrl, activeServiceType, "GetInfomation", soap, 1500);
@@ -691,6 +703,7 @@ public class ViewfinderClient {
     }
 
     private static void readMjpegStream(InputStream in, FrameCallback callback) {
+        final int MAX_FRAME_SIZE = 5 * 1024 * 1024; // 5MB frame buffer limit against OOM DoS
         ByteArrayOutputStream buffer = new ByteArrayOutputStream(65536);
         byte[] readBuf = new byte[8192];
         int prev = -1;
@@ -715,7 +728,11 @@ public class ViewfinderClient {
                         }
                     } else {
                         buffer.write(b);
-                        if (prev == 0xFF && b == 0xD9) {
+                        if (buffer.size() > MAX_FRAME_SIZE) {
+                            Log.w(TAG, "MJPEG frame size exceeded limit (5MB); discarding frame");
+                            buffer.reset();
+                            inFrame = false;
+                        } else if (prev == 0xFF && b == 0xD9) {
                             inFrame = false;
                             byte[] frameData = buffer.toByteArray();
                             if (frameData.length > 512) {
@@ -761,11 +778,13 @@ public class ViewfinderClient {
                     for (ServiceEndpoint ep : activeEndpoints) {
                         for (String act : shutterActions) {
                             try {
+                                String safeServiceType = escapeXml(ep.serviceType);
+                                String safeAct = escapeXml(act);
                                 String soap = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
                                         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
                                         "  <s:Body>\r\n" +
-                                        "    <u:" + act + " xmlns:u=\"" + ep.serviceType + "\">\r\n" +
-                                        "    </u:" + act + ">\r\n" +
+                                        "    <u:" + safeAct + " xmlns:u=\"" + safeServiceType + "\">\r\n" +
+                                        "    </u:" + safeAct + ">\r\n" +
                                         "  </s:Body>\r\n" +
                                         "</s:Envelope>";
 
@@ -833,6 +852,7 @@ public class ViewfinderClient {
         private ServerSocket serverSocket;
         private int boundPort = 7788;
         private volatile boolean running = true;
+        private final java.util.concurrent.ExecutorService clientPool = Executors.newFixedThreadPool(4);
 
         public LocalRvfServer() {
             try {
@@ -873,32 +893,39 @@ public class ViewfinderClient {
         }
 
         private void handleClient(final Socket client) {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        client.setSoTimeout(2000);
-                        InputStream in = client.getInputStream();
-                        byte[] buf = new byte[1024];
-                        in.read(buf);
+            try {
+                clientPool.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            client.setSoTimeout(2000);
+                            InputStream in = client.getInputStream();
+                            byte[] buf = new byte[1024];
+                            in.read(buf);
 
-                        OutputStream os = client.getOutputStream();
-                        String resp = "HTTP/1.1 200 OK\r\n" +
-                                "Server: Linux/2.6 UPnP/1.0 SEC_RVF/1.0\r\n" +
-                                "Content-Length: 0\r\n" +
-                                "Connection: close\r\n\r\n";
-                        os.write(resp.getBytes(StandardCharsets.UTF_8));
-                        os.flush();
-                        client.close();
-                    } catch (Exception ignored) {
-                        try { client.close(); } catch (Exception ignored2) {}
+                            OutputStream os = client.getOutputStream();
+                            String resp = "HTTP/1.1 200 OK\r\n" +
+                                    "Server: Linux/2.6 UPnP/1.0 SEC_RVF/1.0\r\n" +
+                                    "Content-Length: 0\r\n" +
+                                    "Connection: close\r\n\r\n";
+                            os.write(resp.getBytes(StandardCharsets.UTF_8));
+                            os.flush();
+                            client.close();
+                        } catch (Exception ignored) {
+                            try { client.close(); } catch (Exception ignored2) {}
+                        }
                     }
-                }
-            }).start();
+                });
+            } catch (Exception e) {
+                try { client.close(); } catch (Exception ignored) {}
+            }
         }
 
         public void shutdown() {
             running = false;
+            try {
+                clientPool.shutdownNow();
+            } catch (Exception ignored) {}
             if (serverSocket != null) {
                 try { serverSocket.close(); } catch (Exception ignored) {}
             }
