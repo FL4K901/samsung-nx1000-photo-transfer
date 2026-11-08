@@ -142,7 +142,11 @@ public class ViewfinderClient {
     private static volatile Network activeWifiNetwork;
     private static volatile String activeCameraIp;
     private static volatile String activeStreamUrl;
-    private static volatile List<UpnpEndpoint> activeEndpoints = new ArrayList<>();
+    private static volatile List<UpnpEndpoint> activeEndpoints = new java.util.concurrent.CopyOnWriteArrayList<>();
+    // Session generation: incremented on every connect()/disconnect() so stale background work
+    // (old connect threads, shutter stream restarts) never touches a newer RVF session.
+    private static final java.util.concurrent.atomic.AtomicInteger sessionGeneration = new java.util.concurrent.atomic.AtomicInteger(0);
+    private static volatile Object sessionOwner = null;
 
     // Camera state parsed from GetInfomation
     private static volatile String currentFlash = "off";
@@ -257,12 +261,16 @@ public class ViewfinderClient {
     }
 
     public static void connect(final Context context, final String cameraIp, final ConnectionCallback callback) {
+        sessionOwner = context;
         appContext = context.getApplicationContext();
         activeWifiNetwork = NetworkManager.bindProcessToWifi(appContext);
         connect(cameraIp, callback);
     }
 
     public static void connect(final String cameraIp, final ConnectionCallback callback) {
+        // Tear down any previous stream so the camera's single RVF session slot is free
+        stopLiveStream();
+        final int myGen = sessionGeneration.incrementAndGet();
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -426,6 +434,10 @@ public class ViewfinderClient {
                     // and starts its live stream server when GetInfomation succeeds!
                     boolean infoSuccess = false;
                     for (int attempt = 1; attempt <= 25; attempt++) {
+                        if (sessionGeneration.get() != myGen) {
+                            Log.i(TAG, "connect: superseded by newer session, aborting");
+                            return;
+                        }
                         if (executeGetInformation(activeCameraIp)) {
                             infoSuccess = true;
                             Log.i(TAG, "GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
@@ -439,6 +451,10 @@ public class ViewfinderClient {
                         }
                     }
 
+                    if (sessionGeneration.get() != myGen) {
+                        Log.i(TAG, "connect: session superseded before callback, dropping result");
+                        return;
+                    }
                     if (infoSuccess && activeStreamUrl != null && !activeStreamUrl.isEmpty()) {
                         callback.onConnected(activeCameraIp);
                     } else if (infoSuccess) {
@@ -2047,6 +2063,7 @@ public class ViewfinderClient {
         new Thread(new Runnable() {
             @Override
             public void run() {
+                final int shotGen = sessionGeneration.get();
                 final boolean wasStreaming = isStreaming.get();
                 final FrameCallback savedFrameCallback = lastFrameCallback;
                 final String ip = (cameraIp != null && !cameraIp.isEmpty()) ? cameraIp :
@@ -2152,9 +2169,14 @@ public class ViewfinderClient {
                     }
                 } finally {
                     // Restart live stream automatically after Shot completes (matching LiveShutter.GetLiveStream())
+                    // Only if the same session is still alive (activity not closed / reconnected meanwhile)
                     if (wasStreaming && savedFrameCallback != null) {
                         try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-                        startLiveStream(ip, savedFrameCallback);
+                        if (sessionGeneration.get() == shotGen && lastFrameCallback == savedFrameCallback) {
+                            startLiveStream(ip, savedFrameCallback);
+                        } else {
+                            Log.i(TAG, "triggerShutter: session ended, not restarting stream");
+                        }
                     }
                 }
             }
@@ -2310,7 +2332,22 @@ public class ViewfinderClient {
         return null;
     }
 
+    /**
+     * Disconnects only if the given owner still owns the session. Android may call an old
+     * activity's onDestroy() after a new instance already started connecting; this prevents
+     * the stale onDestroy from killing the new session.
+     */
+    public static void disconnect(Object owner) {
+        if (owner != null && sessionOwner != null && owner != sessionOwner) {
+            Log.i(TAG, "disconnect: ignored, caller no longer owns the RVF session");
+            return;
+        }
+        sessionOwner = null;
+        disconnect();
+    }
+
     public static void disconnect() {
+        sessionGeneration.incrementAndGet();
         stopLiveStream();
         lastFrameCallback = null;
         activeEndpoints.clear();
