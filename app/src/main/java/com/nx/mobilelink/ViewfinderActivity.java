@@ -275,6 +275,19 @@ public class ViewfinderActivity extends Activity {
         txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
         txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
 
+        // Safety watchdog: reset isConnecting after 15 seconds if neither callback fired
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (isConnecting && connectedCameraIp == null) {
+                    isConnecting = false;
+                    progressScan.setVisibility(View.GONE);
+                    btnConnect.setEnabled(true);
+                    updateStatusBanner();
+                }
+            }
+        }, 15000);
+
         ViewfinderClient.connect(this, customIp, new ViewfinderClient.ConnectionCallback() {
             @Override
             public void onConnected(final String cameraIp) {
@@ -404,7 +417,7 @@ public class ViewfinderActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        ViewfinderClient.disconnect(this);
+        ViewfinderClient.disconnect();
         super.onDestroy();
     }
 }
