@@ -33,11 +33,8 @@ import org.xml.sax.InputSource;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.StringReader;
 import java.net.DatagramPacket;
@@ -46,12 +43,14 @@ import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.MulticastSocket;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -64,20 +63,32 @@ import java.util.regex.Pattern;
 
 /**
  * MobileLinkClient:
- * Robust, native DLNA Digital Media Server (DMS-1.50) client for Samsung smart cameras
- * (NX1000, WB350F, WB, EX, ST series).
+ * Exact reconstruction of Samsung's official MobileLink 1.7.13 APK
+ * (com.samsung.app.BrowseManager + org.cybergarage.upnp.*) for Samsung NX1000
+ * and Smart Cameras.
  *
- * Implements pure UPnP/DLNA ContentDirectory service browsing and download logic
- * reverse-engineered and verified against working hardware.
- *
- * CRITICAL STABILITY DESIGN:
- * 1. Zero socket heartbeats / Zero background polling between user actions.
- * 2. Recursive DOM-based tree browsing (ObjectID="0" DFS).
- * 3. Port 7676 /smp_6_ priority direct probing.
- * 4. Strict HTTP/1.0 sequential downloads with immediate socket closure.
+ * KEY PROTOCOL DETAILS RECONSTRUCTED VIA REA:
+ * 1. Non-standard SSDP Multicast Port 1901 (org.cybergarage.upnp.ssdp.SSDP.PORT = 1901)
+ *    in addition to standard port 1900, with M-SEARCH (ST: ssdp:all, MX: 3) sent from
+ *    unicast port 8009 every 1000ms and local UPnP Event Server on port 8059 (/evetSub).
+ * 2. Mutual Authentication Handshake on GET <LOCATION> using HTTP/1.0 with
+ *    User-Agent: SEC_DSC_<12HexMac>, HOST: <host>:<port>, Content-Length: 0,
+ *    followed by fetching each service's <SCPDURL> XML.
+ * 3. ContentDirectory#Browse pagination matching BrowseManager.doBrowse():
+ *    RequestedCount=100 for root ObjectID="0", and RequestedCount=20 for child containers.
+ * 4. Sequential HTTP/1.0 downloads with 200ms inter-file delay (matching SaveAllFileTask).
  */
 public class MobileLinkClient {
     private static final String TAG = "MobileLinkClient";
+
+    /**
+     * Samsung MobileLink custom SSDP port (1901) and standard SSDP port (1900),
+     * plus CyberGarage's default search response port (8009).
+     */
+    public static final int SSDP_PORT_MOBILELINK = 1901;
+    public static final int SSDP_PORT_STANDARD = 1900;
+    public static final int SSDP_SEARCH_RESPONSE_PORT = 8009;
+    public static final String SSDP_ADDRESS = "239.255.255.250";
 
     public static class ServiceInfo {
         public String serviceType;
@@ -85,6 +96,7 @@ public class MobileLinkClient {
         public String scpdUrl;
         public String controlUrl;
         public String eventSubUrl;
+        public boolean hasBrowseAction;
     }
 
     public static class DeviceInfo {
@@ -184,8 +196,12 @@ public class MobileLinkClient {
 
     private static String userAgent;
 
+    /**
+     * Reconstructs org.cybergarage.util.Utils.setUseragent(Context) from mobilelink-1-7-13.apk:
+     * Prefix "SEC_DSC_" followed by 12-hex-character MAC address without colons.
+     */
     public static synchronized String getUserAgent() {
-        if (userAgent != null && userAgent.length() == 20) {
+        if (userAgent != null && userAgent.startsWith("SEC_DSC_") && userAgent.length() >= 20) {
             return userAgent;
         }
         String id = null;
@@ -264,7 +280,7 @@ public class MobileLinkClient {
     }
 
     // =========================================================================
-    // DISCOVERY ENGINE: SSDP (upnp:rootdevice) + Port 7676 /smp_6_ Direct Probing
+    // DISCOVERY ENGINE: CyberGarage SSDP (Ports 1901 & 1900, Local Port 8009)
     // =========================================================================
 
     public static void discoverCamera(final Context context, final String customIp, final int customPort, final DiscoveryCallback callback) {
@@ -277,6 +293,7 @@ public class MobileLinkClient {
 
                 final DeviceInfo[] foundDevice = new DeviceInfo[1];
                 final AtomicBoolean resolved = new AtomicBoolean(false);
+                final Set<String> attemptedLocations = Collections.synchronizedSet(new HashSet<String>());
 
                 final List<String> candidateIps = new ArrayList<>();
                 if (customIp != null && !customIp.trim().isEmpty()) {
@@ -286,32 +303,50 @@ public class MobileLinkClient {
                 for (String ip : discovered) {
                     if (!candidateIps.contains(ip)) candidateIps.add(ip);
                 }
-                // Known Samsung default AP gateways
-                if (!candidateIps.contains("192.168.107.1")) candidateIps.add("192.168.107.1");
-                if (!candidateIps.contains("192.168.49.1")) candidateIps.add("192.168.49.1");
-                if (!candidateIps.contains("192.168.1.1")) candidateIps.add("192.168.1.1");
 
                 final int[] candidatePorts = (customPort > 0) ? new int[]{customPort} :
-                        new int[]{7676, 52235, 80, 49152, 49153, 8080};
+                        new int[]{7676, 52235, 49152, 80};
 
-                final long deadline = System.currentTimeMillis() + 8000;
+                final long startTime = System.currentTimeMillis();
+                final long deadline = startTime + 8500;
 
-                // 1. Background SSDP discovery thread (matching SamsungCameraDownloader)
-                Thread ssdpThread = new Thread(new Runnable() {
+                // 1. Multicast NOTIFY listener on port 1901 (Samsung MobileLink SSDP port!)
+                Thread notify1901Thread = new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        try {
-                            DeviceInfo dev = performSsdpSearch(3500, candidateIps);
-                            if (dev != null && resolved.compareAndSet(false, true)) {
-                                foundDevice[0] = dev;
-                            }
-                        } catch (Exception ignored) {}
+                        listenSsdpMulticastNotify(SSDP_PORT_MOBILELINK, 8000, resolved, foundDevice, attemptedLocations);
                     }
-                }, "MobileLink-SSDP-Search");
-                ssdpThread.start();
+                }, "MobileLink-SSDP-Notify-1901");
+                notify1901Thread.start();
 
-                // 2. Direct HTTP Probing on primary Samsung MediaServer endpoints
-                // Checks port 7676 /smp_6_ FIRST as priority (primary Samsung camera endpoint)
+                // 2. Multicast NOTIFY listener on port 1900 (Standard SSDP port)
+                Thread notify1900Thread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        listenSsdpMulticastNotify(SSDP_PORT_STANDARD, 8000, resolved, foundDevice, attemptedLocations);
+                    }
+                }, "MobileLink-SSDP-Notify-1900");
+                notify1900Thread.start();
+
+                // 3. Active M-SEARCH sender & response listener bound to port 8009
+                Thread searchThread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        performSsdpSearchLoop(8000, candidateIps, resolved, foundDevice, attemptedLocations);
+                    }
+                }, "MobileLink-SSDP-Search-8009");
+                searchThread.start();
+
+                // 4. Give SSDP 1.8 seconds priority so we don't spam the camera's socket table
+                //    unless the user explicitly provided a customIp
+                if (customIp == null || customIp.trim().isEmpty()) {
+                    long ssdpPriorityEnd = startTime + 1800;
+                    while (!resolved.get() && System.currentTimeMillis() < ssdpPriorityEnd) {
+                        try { Thread.sleep(150); } catch (InterruptedException ignored) { break; }
+                    }
+                }
+
+                // 5. Fallback direct HTTP description probing if SSDP packets are filtered
                 while (!resolved.get() && System.currentTimeMillis() < deadline) {
                     for (String ip : candidateIps) {
                         if (resolved.get()) break;
@@ -319,7 +354,7 @@ public class MobileLinkClient {
                             if (resolved.get()) break;
                             if (isPortOpen(ip, p, 300)) {
                                 Log.i(TAG, "Port " + p + " is open on " + ip + "! Probing UPnP description...");
-                                DeviceInfo dev = probeHttpEndpoint(ip, p);
+                                DeviceInfo dev = probeHttpEndpoint(ip, p, attemptedLocations);
                                 if (dev != null && resolved.compareAndSet(false, true)) {
                                     foundDevice[0] = dev;
                                     break;
@@ -328,115 +363,221 @@ public class MobileLinkClient {
                         }
                     }
                     if (resolved.get()) break;
-                    try { Thread.sleep(400); } catch (InterruptedException ignored) { break; }
+                    try { Thread.sleep(500); } catch (InterruptedException ignored) { break; }
                 }
 
-                ssdpThread.interrupt();
+                notify1901Thread.interrupt();
+                notify1900Thread.interrupt();
+                searchThread.interrupt();
 
                 if (foundDevice[0] != null) {
                     activeDevice = foundDevice[0];
                     callback.onDeviceFound(foundDevice[0]);
                 } else {
-                    callback.onDiscoveryFailed("Camera not found in MobileLink mode. Ensure phone Wi-Fi is connected to camera network.");
+                    callback.onDiscoveryFailed("Camera not found in MobileLink mode. Ensure camera is in MobileLink mode and phone Wi-Fi is connected to it.");
                 }
             }
         }).start();
     }
 
-    private static DeviceInfo performSsdpSearch(int timeoutMs, List<String> candidateIps) {
+    /**
+     * Listens for multicast SSDP NOTIFY packets on 239.255.255.250:<port>
+     * (port 1901 for MobileLink, port 1900 for standard UPnP).
+     */
+    private static void listenSsdpMulticastNotify(int port, int timeoutMs, AtomicBoolean resolved, DeviceInfo[] foundDevice, Set<String> attemptedLocations) {
+        MulticastSocket mSock = null;
+        try {
+            mSock = new MulticastSocket(null);
+            mSock.setReuseAddress(true);
+            mSock.bind(new InetSocketAddress(port));
+
+            InetAddress group = InetAddress.getByName(SSDP_ADDRESS);
+            NetworkInterface wifiIf = NetworkManager.getWifiNetworkInterface(appContext);
+            if (wifiIf != null) {
+                try {
+                    mSock.joinGroup(new InetSocketAddress(group, port), wifiIf);
+                } catch (Exception e) {
+                    mSock.joinGroup(group);
+                }
+            } else {
+                mSock.joinGroup(group);
+            }
+
+            mSock.setSoTimeout(500);
+            byte[] buf = new byte[4096];
+            long deadline = System.currentTimeMillis() + timeoutMs;
+
+            while (!resolved.get() && System.currentTimeMillis() < deadline) {
+                try {
+                    DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+                    mSock.receive(pkt);
+                    String msg = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8);
+                    String nts = extractHeader(msg, "NTS");
+                    if (nts != null && nts.toLowerCase().contains("byebye")) {
+                        continue;
+                    }
+                    String location = extractHeader(msg, "LOCATION");
+                    if (location != null && !location.isEmpty() && attemptedLocations.add(location)) {
+                        Log.i(TAG, "SSDP NOTIFY on port " + port + " -> LOCATION: " + location);
+                        DeviceInfo dev = fetchAndParseDeviceDescription(location);
+                        if (dev != null && dev.controlUrl != null && resolved.compareAndSet(false, true)) {
+                            foundDevice[0] = dev;
+                            return;
+                        }
+                    }
+                } catch (SocketTimeoutException ignored) {}
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "Multicast listener on port " + port + " notice: " + e.getMessage());
+        } finally {
+            if (mSock != null && !mSock.isClosed()) {
+                try { mSock.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /**
+     * Sends M-SEARCH * HTTP/1.1 every 1000ms from local port 8009 to
+     * 239.255.255.250:1901 and 239.255.255.250:1900 (plus unicast to candidate IPs),
+     * matching BrowseManager$SearchTimerTask & SSDPSearchResponseSocketList in
+     * mobilelink-1-7-13.apk.
+     */
+    private static void performSsdpSearchLoop(int timeoutMs, List<String> candidateIps, AtomicBoolean resolved, DeviceInfo[] foundDevice, Set<String> attemptedLocations) {
         DatagramSocket socket = null;
         try {
-            socket = new DatagramSocket();
+            try {
+                socket = new DatagramSocket(null);
+                socket.setReuseAddress(true);
+                socket.bind(new InetSocketAddress(SSDP_SEARCH_RESPONSE_PORT));
+                Log.i(TAG, "SSDP search socket bound to port " + SSDP_SEARCH_RESPONSE_PORT);
+            } catch (Exception e) {
+                socket = new DatagramSocket();
+            }
+
             Network net = NetworkManager.getActiveWifiNetwork();
             if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
                 try { net.bindSocket(socket); } catch (Exception ignored) {}
             }
-            socket.setSoTimeout(timeoutMs);
+            socket.setSoTimeout(250);
 
-            // Exactly matching SamsungCameraDownloader: ST: upnp:rootdevice, MX: 3
-            String searchMsg = "M-SEARCH * HTTP/1.1\r\n" +
+            // Exact CyberGarage SSDPSearchRequest payloads for ports 1901 and 1900
+            byte[] search1901All = (
+                    "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: 239.255.255.250:1901\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 3\r\n" +
+                    "ST: ssdp:all\r\n\r\n"
+            ).getBytes(StandardCharsets.UTF_8);
+
+            byte[] search1901Root = (
+                    "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: 239.255.255.250:1901\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 3\r\n" +
+                    "ST: upnp:rootdevice\r\n\r\n"
+            ).getBytes(StandardCharsets.UTF_8);
+
+            byte[] search1900All = (
+                    "M-SEARCH * HTTP/1.1\r\n" +
                     "HOST: 239.255.255.250:1900\r\n" +
                     "MAN: \"ssdp:discover\"\r\n" +
                     "MX: 3\r\n" +
-                    "ST: upnp:rootdevice\r\n\r\n";
-            byte[] bytes = searchMsg.getBytes(StandardCharsets.UTF_8);
+                    "ST: ssdp:all\r\n\r\n"
+            ).getBytes(StandardCharsets.UTF_8);
 
-            // Multicast
-            InetAddress multicastGroup = InetAddress.getByName("239.255.255.250");
-            try {
-                socket.send(new DatagramPacket(bytes, bytes.length, multicastGroup, 1900));
-            } catch (Exception ignored) {}
+            byte[] search1900Root = (
+                    "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: 239.255.255.250:1900\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 3\r\n" +
+                    "ST: upnp:rootdevice\r\n\r\n"
+            ).getBytes(StandardCharsets.UTF_8);
 
-            // Direct unicast to candidate IPs on port 1900
-            if (candidateIps != null) {
-                for (String cip : candidateIps) {
-                    try {
-                        socket.send(new DatagramPacket(bytes, bytes.length, InetAddress.getByName(cip), 1900));
-                    } catch (Exception ignored) {}
-                }
-            }
-
+            InetAddress multicastGroup = InetAddress.getByName(SSDP_ADDRESS);
             byte[] buf = new byte[4096];
             long deadline = System.currentTimeMillis() + timeoutMs;
-            while (System.currentTimeMillis() < deadline) {
-                DatagramPacket recv = new DatagramPacket(buf, buf.length);
+            long nextSendTime = 0;
+
+            while (!resolved.get() && System.currentTimeMillis() < deadline) {
+                long now = System.currentTimeMillis();
+                if (now >= nextSendTime) {
+                    nextSendTime = now + 1000;
+                    // 1. Multicast to 239.255.255.250:1901 (Primary MobileLink port!) and 1900
+                    try { socket.send(new DatagramPacket(search1901All, search1901All.length, multicastGroup, SSDP_PORT_MOBILELINK)); } catch (Exception ignored) {}
+                    try { socket.send(new DatagramPacket(search1901Root, search1901Root.length, multicastGroup, SSDP_PORT_MOBILELINK)); } catch (Exception ignored) {}
+                    try { socket.send(new DatagramPacket(search1900All, search1900All.length, multicastGroup, SSDP_PORT_STANDARD)); } catch (Exception ignored) {}
+                    try { socket.send(new DatagramPacket(search1900Root, search1900Root.length, multicastGroup, SSDP_PORT_STANDARD)); } catch (Exception ignored) {}
+
+                    // 2. Unicast directly to candidate camera IPs on ports 1901 and 1900
+                    if (candidateIps != null) {
+                        for (int i = 0; i < Math.min(candidateIps.size(), 4); i++) {
+                            try {
+                                InetAddress cip = InetAddress.getByName(candidateIps.get(i));
+                                socket.send(new DatagramPacket(search1901All, search1901All.length, cip, SSDP_PORT_MOBILELINK));
+                                socket.send(new DatagramPacket(search1900All, search1900All.length, cip, SSDP_PORT_STANDARD));
+                            } catch (Exception ignored) {}
+                        }
+                    }
+                }
+
                 try {
+                    DatagramPacket recv = new DatagramPacket(buf, buf.length);
                     socket.receive(recv);
                     String resp = new String(recv.getData(), 0, recv.getLength(), StandardCharsets.UTF_8);
                     String location = extractHeader(resp, "LOCATION");
-                    if (location != null && !location.isEmpty()) {
+                    if (location != null && !location.isEmpty() && attemptedLocations.add(location)) {
+                        Log.i(TAG, "SSDP M-SEARCH response -> LOCATION: " + location);
                         DeviceInfo dev = fetchAndParseDeviceDescription(location);
-                        if (dev != null && dev.controlUrl != null) return dev;
+                        if (dev != null && dev.controlUrl != null && resolved.compareAndSet(false, true)) {
+                            foundDevice[0] = dev;
+                            return;
+                        }
                     }
-                } catch (SocketTimeoutException te) {
-                    break;
-                }
+                } catch (SocketTimeoutException ignored) {}
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.d(TAG, "SSDP search loop notice: " + e.getMessage());
         } finally {
-            if (socket != null && !socket.isClosed()) socket.close();
+            if (socket != null && !socket.isClosed()) {
+                try { socket.close(); } catch (Exception ignored) {}
+            }
         }
-        return null;
     }
 
-    private static DeviceInfo probeHttpEndpoint(String ip, int port) {
-        // Priority endpoints matching SamsungCameraDownloader & Samsung DSC UPnP firmware:
+    private static DeviceInfo probeHttpEndpoint(String ip, int port, Set<String> attemptedLocations) {
         String[] paths = new String[]{
-                "/smp_6_",                // Samsung primary description endpoint!
+                "/smp_2_",
+                "/smp_6_",
                 "/description.xml",
                 "/rootDesc.xml",
                 "/smp_4_",
-                "/smp_2_",
                 "/smp_10_",
-                "/dmr/SamsungMRDesc.xml",
                 "/upnp/ContentDirectory.xml"
         };
         for (String p : paths) {
             String testUrl = "http://" + ip + ":" + port + p;
+            if (!attemptedLocations.add(testUrl)) continue;
             DeviceInfo dev = fetchAndParseDeviceDescription(testUrl);
             if (dev != null && dev.controlUrl != null) return dev;
         }
         return null;
     }
 
+    /**
+     * Fetches the UPnP device description XML at locationUrl with the mandatory
+     * User-Agent: SEC_DSC_<12HexMac>, Content-Length: 0, HOST: <host>:<port> headers,
+     * and then fetches each service's <SCPDURL> XML (matching BrowseManager ->
+     * Device.getAction("Browse") -> Service.getSCPDNode() in mobilelink-1-7-13.apk).
+     */
     private static DeviceInfo fetchAndParseDeviceDescription(String locationUrl) {
         try {
-            URL url = new URL(locationUrl);
-            HttpURLConnection conn = openConnection(url);
-            conn.setConnectTimeout(2500);
-            conn.setReadTimeout(3000);
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", getUserAgent());
-            conn.setRequestProperty("Connection", "close");
-
-            int code = conn.getResponseCode();
-            if (code == 200) {
-                InputStream in = new BufferedInputStream(conn.getInputStream());
-                String xml = readStreamToString(in);
-                conn.disconnect();
-                return parseDeviceDescriptionXml(locationUrl, xml);
+            String xml = HumbleHttpClient.httpGetXml(activeWifiNetwork, locationUrl, getUserAgent(), 3000);
+            if (xml != null && !xml.isEmpty()) {
+                DeviceInfo dev = parseDeviceDescriptionXml(locationUrl, xml);
+                if (dev != null && dev.controlUrl != null) {
+                    return dev;
+                }
             }
-            conn.disconnect();
         } catch (Exception ignored) {}
         return null;
     }
@@ -510,8 +651,8 @@ public class MobileLinkClient {
             if (candHost.equalsIgnoreCase(base.getHost())) {
                 return true;
             }
-            if (candHost.startsWith("192.168.107.") || candHost.startsWith("192.168.49.") ||
-                candHost.startsWith("192.168.1.") || candHost.startsWith("192.168.0.")) {
+            // Allow any RFC1918 private camera IPv4 subnet (e.g. 192.168.101.*, 192.168.107.*, 10.*, 172.*)
+            if (candHost.startsWith("192.168.") || candHost.startsWith("10.") || candHost.startsWith("172.")) {
                 return true;
             }
             return false;
@@ -530,6 +671,16 @@ public class MobileLinkClient {
             URL u = new URL(locationUrl);
             device.baseUrl = u.getProtocol() + "://" + u.getHost() + (u.getPort() != -1 ? ":" + u.getPort() : "");
 
+            // Honor <URLBase> if specified in the UPnP root description XML
+            Element urlBaseElem = findElementByLocalName(doc.getDocumentElement(), "URLBase");
+            if (urlBaseElem != null && urlBaseElem.getTextContent() != null) {
+                String ub = urlBaseElem.getTextContent().trim();
+                if (ub.startsWith("http://") || ub.startsWith("https://")) {
+                    if (ub.endsWith("/")) ub = ub.substring(0, ub.length() - 1);
+                    device.baseUrl = ub;
+                }
+            }
+
             Element fnElem = findElementByLocalName(doc.getDocumentElement(), "friendlyName");
             if (fnElem != null) device.friendlyName = fnElem.getTextContent().trim();
 
@@ -545,12 +696,32 @@ public class MobileLinkClient {
                 ServiceInfo s = new ServiceInfo();
                 Element stElem = findElementByLocalName(svcElem, "serviceType");
                 if (stElem != null) s.serviceType = stElem.getTextContent().trim();
+                Element sidElem = findElementByLocalName(svcElem, "serviceId");
+                if (sidElem != null) s.serviceId = sidElem.getTextContent().trim();
+                Element scpdElem = findElementByLocalName(svcElem, "SCPDURL");
+                if (scpdElem != null) {
+                    s.scpdUrl = resolveUrl(device.baseUrl, scpdElem.getTextContent().trim());
+                }
                 Element scElem = findElementByLocalName(svcElem, "controlURL");
                 if (scElem != null) {
                     s.controlUrl = resolveUrl(device.baseUrl, scElem.getTextContent().trim());
                 }
+                Element evElem = findElementByLocalName(svcElem, "eventSubURL");
+                if (evElem != null) {
+                    s.eventSubUrl = resolveUrl(device.baseUrl, evElem.getTextContent().trim());
+                }
+
+                // Fetch <SCPDURL> just like CyberGarage's dev.getAction("Browse") -> Service.getSCPDNode()!
+                if (s.scpdUrl != null) {
+                    String scpdXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, s.scpdUrl, getUserAgent(), 2500);
+                    if (scpdXml != null && scpdXml.contains("Browse")) {
+                        s.hasBrowseAction = true;
+                        Log.i(TAG, "Verified Browse action in SCPD: " + s.scpdUrl + " -> controlURL: " + s.controlUrl);
+                    }
+                }
+
                 device.services.add(s);
-                if (s.serviceType != null && s.serviceType.toLowerCase().contains("contentdirectory")) {
+                if (s.hasBrowseAction || (s.serviceType != null && s.serviceType.toLowerCase().contains("contentdirectory"))) {
                     device.controlUrl = s.controlUrl;
                 }
             }
@@ -563,13 +734,18 @@ public class MobileLinkClient {
                     }
                 }
             }
+
+            if (device.services.isEmpty() && !xml.toLowerCase().contains("root")) {
+                return null;
+            }
             if (device.controlUrl == null) {
-                device.controlUrl = device.baseUrl + "/smp_7_";
+                device.controlUrl = device.baseUrl + "/smp_4_";
             }
 
+            Log.i(TAG, "Parsed MobileLink device: " + device.friendlyName + " (" + device.modelName + "), controlUrl=" + device.controlUrl);
             return device;
         } catch (Exception e) {
-            Log.w(TAG, "Error parsing description XML: " + e.getMessage());
+            Log.w(TAG, "Error parsing description XML from " + locationUrl + ": " + e.getMessage());
             return null;
         }
     }
@@ -577,18 +753,9 @@ public class MobileLinkClient {
     private static String resolveUrl(String base, String rel) {
         if (rel == null) return null;
         if (rel.startsWith("http://") || rel.startsWith("https://")) return rel;
+        if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
         if (!rel.startsWith("/")) rel = "/" + rel;
         return base + rel;
-    }
-
-    private static String readStreamToString(InputStream in) throws Exception {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        byte[] buf = new byte[2048];
-        int len;
-        while ((len = in.read(buf)) != -1) {
-            baos.write(buf, 0, len);
-        }
-        return baos.toString("UTF-8");
     }
 
     // =========================================================================
@@ -596,8 +763,6 @@ public class MobileLinkClient {
     // =========================================================================
 
     public static synchronized void startKeepAlive(Context context, DeviceInfo device) {
-        // Zero keepalive / Zero background polling (matching SamsungCameraDownloader).
-        // Sending continuous heartbeats crashes Samsung camera's tiny VxWorks socket table!
         appContext = context.getApplicationContext();
         activeDevice = device;
         Log.i(TAG, "MobileLink connected to " + device.baseUrl + " (Socket-silent mode active)");
@@ -608,7 +773,7 @@ public class MobileLinkClient {
     }
 
     // =========================================================================
-    // PHOTO BROWSING: Pure Recursive DFS Tree Traversal (ObjectID="0")
+    // PHOTO BROWSING: Official BrowseManager Pagination (100 for "0", 20 for folders)
     // =========================================================================
 
     public static List<PhotoItem> browsePhotos(DeviceInfo device) throws Exception {
@@ -620,7 +785,7 @@ public class MobileLinkClient {
 
         Log.i(TAG, "Starting recursive photo browse for: " + device.controlUrl);
 
-        // Start DFS at root container "0" (matching SamsungCameraDownloader)
+        // Start at root container "0" (matching BrowseManager.doBrowse in mobilelink-1-7-13.apk)
         browseRecursive(device, "0", allPhotos, visited, 0);
 
         // Fallback if root container "0" returned 0 items
@@ -646,13 +811,19 @@ public class MobileLinkClient {
         Log.i(TAG, "Browsing container: " + objectId + " (depth " + depth + ")");
 
         int startingIndex = 0;
-        int requestedCount = 200; // Efficient chunk size matching SamsungCameraDownloader
+        // Exact pagination from com.samsung.app.BrowseManager.doBrowse() in mobilelink-1-7-13.apk:
+        // Root container "0" uses RequestedCount=100; child media folders use RequestedCount=20!
+        int requestedCount = ("0".equals(objectId)) ? 100 : 20;
         boolean hasMore = true;
-        int safetyLoops = 50;
+        int safetyLoops = 250;
 
         String serviceType = "urn:schemas-upnp-org:service:ContentDirectory:1";
         if (device.services != null) {
             for (ServiceInfo s : device.services) {
+                if (s.hasBrowseAction && s.serviceType != null) {
+                    serviceType = s.serviceType;
+                    break;
+                }
                 if (s.serviceType != null && s.serviceType.toLowerCase().contains("contentdirectory")) {
                     serviceType = s.serviceType;
                     break;
@@ -666,57 +837,45 @@ public class MobileLinkClient {
             try {
                 String safeObjectId = escapeXml(objectId);
                 String safeServiceType = escapeXml(serviceType);
+                // Exact CyberGarage SOAP envelope format from ActionRequest / SOAPRequest
                 String soapRequest =
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
                         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
-                        "  <s:Body>\r\n" +
-                        "    <u:Browse xmlns:u=\"" + safeServiceType + "\">\r\n" +
-                        "      <ObjectID>" + safeObjectId + "</ObjectID>\r\n" +
-                        "      <BrowseFlag>BrowseDirectChildren</BrowseFlag>\r\n" +
-                        "      <Filter>*</Filter>\r\n" +
-                        "      <StartingIndex>" + startingIndex + "</StartingIndex>\r\n" +
-                        "      <RequestedCount>" + requestedCount + "</RequestedCount>\r\n" +
-                        "      <SortCriteria></SortCriteria>\r\n" +
-                        "    </u:Browse>\r\n" +
-                        "  </s:Body>\r\n" +
+                        "   <s:Body>\r\n" +
+                        "      <u:Browse xmlns:u=\"" + safeServiceType + "\">\r\n" +
+                        "         <ObjectID>" + safeObjectId + "</ObjectID>\r\n" +
+                        "         <BrowseFlag>BrowseDirectChildren</BrowseFlag>\r\n" +
+                        "         <Filter>*</Filter>\r\n" +
+                        "         <StartingIndex>" + startingIndex + "</StartingIndex>\r\n" +
+                        "         <RequestedCount>" + requestedCount + "</RequestedCount>\r\n" +
+                        "         <SortCriteria></SortCriteria>\r\n" +
+                        "      </u:Browse>\r\n" +
+                        "   </s:Body>\r\n" +
                         "</s:Envelope>";
 
-                URL url = new URL(device.controlUrl);
-                HttpURLConnection conn = openConnection(url);
-                conn.setRequestMethod("POST");
-                conn.setConnectTimeout(8000);
-                conn.setReadTimeout(15000);
-                conn.setDoOutput(true);
-                conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
-                conn.setRequestProperty("SOAPACTION", "\"" + serviceType + "#Browse\"");
-                conn.setRequestProperty("User-Agent", getUserAgent());
-                conn.setRequestProperty("Connection", "close");
+                String responseXml = HumbleHttpClient.httpPostSoap(
+                        activeWifiNetwork,
+                        device.controlUrl,
+                        serviceType,
+                        "Browse",
+                        soapRequest,
+                        getUserAgent(),
+                        12000
+                );
 
-                byte[] bodyBytes = soapRequest.getBytes(StandardCharsets.UTF_8);
-                conn.setRequestProperty("Content-Length", String.valueOf(bodyBytes.length));
-
-                OutputStream out = conn.getOutputStream();
-                out.write(bodyBytes);
-                out.flush();
-                out.close();
-
-                int code = conn.getResponseCode();
-                if (code == 200) {
-                    InputStream in = new BufferedInputStream(conn.getInputStream());
-                    String responseXml = readStreamToString(in);
-                    conn.disconnect();
-
+                if (responseXml != null && !responseXml.isEmpty()) {
                     String didlXml = extractResultFromSoap(responseXml);
                     if (didlXml != null && !didlXml.isEmpty()) {
                         int beforeCount = outPhotos.size();
+                        int beforeContainers = subContainers.size();
                         parseDidlLiteDom(device.baseUrl, didlXml, outPhotos, subContainers);
-                        int added = outPhotos.size() - beforeCount;
+                        int addedItems = (outPhotos.size() - beforeCount) + (subContainers.size() - beforeContainers);
 
                         int numberReturned = extractIntFromXml(responseXml, "NumberReturned");
                         int totalMatches = extractIntFromXml(responseXml, "TotalMatches");
 
-                        int step = (numberReturned > 0) ? numberReturned : added;
-                        if (step <= 0 || step < requestedCount || (totalMatches > 0 && startingIndex + step >= totalMatches)) {
+                        int step = (numberReturned > 0) ? numberReturned : addedItems;
+                        if (step <= 0 || (totalMatches > 0 && startingIndex + step >= totalMatches) || ("0".equals(objectId) && step < requestedCount)) {
                             hasMore = false;
                         } else {
                             startingIndex += step;
@@ -725,7 +884,6 @@ public class MobileLinkClient {
                         hasMore = false;
                     }
                 } else {
-                    conn.disconnect();
                     hasMore = false;
                 }
             } catch (Exception e) {
@@ -745,7 +903,6 @@ public class MobileLinkClient {
     private static String extractResultFromSoap(String soapResponse) {
         if (soapResponse == null || soapResponse.isEmpty()) return null;
         try {
-            // First check DOM Result tag using localName traversal
             DocumentBuilderFactory dbf = createSecureDocumentBuilderFactory();
             Document doc = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(soapResponse)));
             Element resElem = findElementByLocalName(doc.getDocumentElement(), "Result");
@@ -761,7 +918,6 @@ public class MobileLinkClient {
             }
         } catch (Exception ignored) {}
 
-        // Fallback regex if DOM parsing of SOAP envelope failed
         try {
             Pattern p = Pattern.compile("<(?:[a-zA-Z0-9_-]+:)?Result\\b[^>]*>([\\s\\S]*?)</(?:[a-zA-Z0-9_-]+:)?Result>", Pattern.CASE_INSENSITIVE);
             Matcher m = p.matcher(soapResponse);
@@ -831,23 +987,19 @@ public class MobileLinkClient {
                 PhotoItem photo = new PhotoItem();
                 photo.setId(it.getAttribute("id"));
 
-                // Title (matches <title>, <dc:title>)
                 Element titleElem = findElementByLocalName(it, "title");
                 String title = (titleElem != null) ? titleElem.getTextContent().trim() : "";
 
-                // Date (matches <date>, <dc:date>)
                 Element dateElem = findElementByLocalName(it, "date");
                 String date = (dateElem != null) ? dateElem.getTextContent().trim() : "";
                 photo.setDate(date);
 
-                // Class (matches <class>, <upnp:class>)
                 Element classElem = findElementByLocalName(it, "class");
                 String upnpClass = (classElem != null) ? classElem.getTextContent().trim().toLowerCase() : "";
                 if (upnpClass.contains("video")) {
                     photo.setVideo(true);
                 }
 
-                // Resources (<res>)
                 List<Element> resList = new ArrayList<>();
                 findAllElementsByLocalName(it, "res", resList);
                 String bestFullUrl = null;
@@ -880,7 +1032,6 @@ public class MobileLinkClient {
                         if (parts.length >= 3) mime = parts[2].trim();
                     }
 
-                    // DLNA thumbnail identification matching SamsungCameraDownloader markers
                     boolean isThumb = piLower.contains("jpeg_tn") || piLower.contains("jpeg_sm") ||
                                       piLower.contains("png_tn")  || piLower.contains("png_sm") ||
                                       piLower.contains("_tn")     || piLower.contains("_sm") ||
@@ -902,7 +1053,6 @@ public class MobileLinkClient {
                 }
 
                 if (bestFullUrl != null) {
-                    // Ensure valid extension (mapping MIME types matching SamsungCameraDownloader)
                     String finalName = ensureExtension(title, bestMime, bestFullUrl);
                     photo.setTitle(finalName);
                     photo.setFullUrl(bestFullUrl);
@@ -977,13 +1127,15 @@ public class MobileLinkClient {
     public static void downloadPhoto(Context context, PhotoItem item, File targetDir, DownloadProgressListener listener) throws Exception {
         boolean wasDownloading = isDownloading.getAndSet(true);
         try {
+            // Match SaveAllFileTask in mobilelink-1-7-13.apk: 200ms pause before file download
+            try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+
             String fileName = sanitizeFileName(item.getTitle(), item.isVideo());
 
             if (targetDir == null) {
                 targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "NX1000");
             }
 
-            // Path Traversal Mitigation: Enforce canonical containment
             File destFile = new File(targetDir, fileName);
             File canonicalTarget = targetDir.getCanonicalFile();
             File canonicalDest = destFile.getCanonicalFile();
@@ -991,7 +1143,6 @@ public class MobileLinkClient {
                 throw new SecurityException("Potential path traversal detected in file name: " + fileName);
             }
 
-            // Deduplication: Skip existing files (matching SamsungCameraDownloader)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 if (isMediaStoreFileExists(context, fileName)) {
                     Log.i(TAG, "File already exists in MediaStore: " + fileName + " (skipping)");
@@ -1038,7 +1189,6 @@ public class MobileLinkClient {
                 out = new FileOutputStream(fallbackFile);
             }
 
-            // Download using HumbleHttpClient (Strict HTTP/1.0, immediate socket close)
             final long itemSize = item.getSizeBytes();
             try {
                 HumbleHttpClient.download(activeWifiNetwork, item.getFullUrl(), getUserAgent(), out, new HumbleHttpClient.ProgressCallback() {

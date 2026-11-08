@@ -1,6 +1,6 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.4.3-blue.svg)](release/NX-MobileLink-v1.4.3.apk)
+[![Release](https://img.shields.io/badge/Release-v1.5.0-blue.svg)](release/NX-MobileLink-v1.5.0.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 [![Attribution](https://img.shields.io/badge/Legal-Attribution-orange.svg)](ATTRIBUTION.md)
@@ -28,16 +28,20 @@ This project is a clean-room, reverse-engineered native Android solution that co
 - **Apple-Inspired Dark Mode Home Screen**: Clean, modern dark dashboard featuring an interactive Wi-Fi status capsule and modular cards for **MobileLink** and **Remote Viewfinder**.
 - **100% Modular Protocol Architecture**: Completely separates MobileLink and Remote Viewfinder into independent clients and activities, preventing cross-protocol interference or playback engine deadlocks.
 - **Pure UPnP/DLNA MobileLink Engine**:
-  - Speaks pure UPnP `ContentDirectory:1` with `SEC_DSC_<MAC>` identity.
-  - Deep Recursive Folder Browsing (BFS) across multi-level SD card directories (`0` ➔ `Storage` ➔ `DCIM` ➔ `100_PHOTO`).
+  - Speaks authentic UPnP `ContentDirectory:1` with `SEC_DSC_<MAC>;<Name>;<IP>` mutual authentication identity.
+  - CyberGarage dual-port SSDP discovery on multicast port 1901 (MobileLink) and 1900 (Remote Viewfinder) with unicast response socket on port 8009 and HTTP EventSub server on port 8059 (`/evetSub`).
+  - Strict CyberGarage HTTP/1.0 root XML & SCPDURL parsing handshake that signals the camera to transition out of "Waiting for connection...".
+  - Deep Recursive Folder Browsing (BFS) with pagination (100 root items, 20 child items per page) across multi-level SD card directories (`0` ➔ `Storage` ➔ `DCIM` ➔ `100_PHOTO`).
   - Direct automatic photo loading without artificial polling delays.
   - Zero-collision downloading with automated deduplication and modern MediaStore integration (`Pictures/NX1000`).
   - Global atomic download lock with silent keepalive suspension during downloads, preventing socket congestion and camera disconnects.
 - **Dedicated Remote Viewfinder Engine**:
-  - Full Mode Control integration on port 7788 (`/mode/control`) with `SEC_RVF_<MAC>` identity.
-  - Dual-port reciprocal callback server (ports 7788 & 7792) to keep the camera LCD connected.
-  - Continuous MJPEG streaming pipeline from port 7679 (`/livestream.avi`) with automatic reconnect.
-  - Remote shutter trigger command via UPnP SOAP `Shot` / `ShotWithGPS`.
+  - Clean UPnP RVF protocol reconstructed from official Samsung APK bytecode.
+  - Mutual authentication via root XML & SCPDURL description fetch with `SEC_RVF_<MAC>` User-Agent.
+  - Dynamic stream discovery via single SOAP `GetInfomation` returning `<GETIPRESULT>` (`StreamURL`, e.g. `http://<cam_ip>:8080/stream.jpg`) and `<AVAILSHOTS>`.
+  - Continuous live MJPEG stream decoding directly from the camera's dynamic endpoint.
+  - Eliminated fabricated non-existent background probes (ports 7788/7679) and 3s polling that previously caused camera socket exhaustion.
+  - Remote shutter trigger via UPnP SOAP `Shot` with automated post-capture `Thumbnaildown` (`FileURL + "_SM"`) cycle to cleanly resume live streaming.
 - **Ultra-Lightweight & Native**: Zero bloated third-party dependencies, built entirely using native Android APIs. The compiled, signed APK is only **~100 KB**!
 
 ---
@@ -62,7 +66,7 @@ This application underwent a comprehensive OWASP security review and incorporate
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.4.3.apk](release/NX-MobileLink-v1.4.3.apk)**  
+👉 **[Download NX-MobileLink-v1.5.0.apk](release/NX-MobileLink-v1.5.0.apk)**  
 *(Also available as [NX-MobileLink.apk](release/NX-MobileLink.apk))*
 
 1. Transfer or download the APK to your Android device.
@@ -101,7 +105,7 @@ Requires Android SDK build-tools 34+ and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.4.3.apk`.
+The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.5.0.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -112,6 +116,17 @@ The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.5.0
+* **Official Samsung Protocol Reverse-Engineering & Full Mutual Authentication**:
+  - Reconstructed exact CyberGarage UPnP SSDP protocol from `mobilelink-1-7-13.apk` and `remote-viewfinder-2-2-11-multi-android.apk`.
+  - Added dual SSDP discovery listening on multicast port `1901` (`mobilelink`) and `1900` (`remote-viewfinder`) simultaneously.
+  - Implemented unicast M-SEARCH response socket on port `8009` and UPnP GENA EventSub server on port `8059` (`/evetSub`).
+  - Implemented authentic root description XML & SCPDURL `HTTP/1.0` `GET` mutual authentication with `SEC_DSC_<MAC>;<Name>;<IP>` (MobileLink) and `SEC_RVF_<MAC>` (Remote Viewfinder) User-Agents.
+  - Reconstructed genuine Remote Viewfinder sequence: single SOAP `GetInfomation` returning `<GETIPRESULT>` (`StreamURL`, e.g. `http://<cam_ip>:8080/stream.jpg`), followed by direct live MJPEG stream decoding.
+  - Completely eliminated non-existent ports 7788/7679 probes and 3-second polling loops that previously overloaded camera RTOS sockets.
+  - Added post-capture `Thumbnaildown` protocol (`GET FileURL + "_SM"`) in `ViewfinderClient` to complete camera capture cycle.
+  - Added ContentDirectory pagination (`RequestedCount = 100` for root `0`, `20` for child folders) and smart gateway/DHCP IP candidate resolution across all private subnets.
 
 ### Version 1.4.3
 * **Comprehensive OWASP Security Hardening**:

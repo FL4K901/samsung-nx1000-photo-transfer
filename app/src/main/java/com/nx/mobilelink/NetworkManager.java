@@ -23,15 +23,23 @@ import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.util.Log;
 
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
 
 /**
- * Centralized network management and process binding.
+ * Centralized network management, process Wi-Fi binding, and CyberGarage UPnP
+ * Event Listener server (port 8059, /evetSub).
+ *
  * CRITICAL FOR ANDROID 8+:
  * When connected to a camera Wi-Fi without internet access, Android will
  * route all traffic to cellular mobile data unless the process is explicitly
@@ -39,6 +47,14 @@ import java.util.List;
  */
 public class NetworkManager {
     private static final String TAG = "NetworkManager";
+
+    /**
+     * CyberGarage UPnP ControlPoint default HTTP Event Subscription port (8059)
+     * reconstructed from org.cybergarage.upnp.ControlPoint in both
+     * mobilelink-1-7-13.apk and remote-viewfinder-2-2-11-multi-android.apk.
+     */
+    public static final int DEFAULT_EVENTSUB_PORT = 8059;
+    public static final String DEFAULT_EVENTSUB_URI = "/evetSub";
 
     public interface WifiListener {
         void onWifiChanged(boolean connected, String ssid, Network network);
@@ -48,6 +64,7 @@ public class NetworkManager {
     private static ConnectivityManager.NetworkCallback globalNetworkCallback;
     private static WifiManager.WifiLock wifiLock;
     private static WifiManager.MulticastLock multicastLock;
+    private static UpnpEventServer upnpEventServer;
 
     public static synchronized Network getActiveWifiNetwork() {
         return activeWifiNetwork;
@@ -104,12 +121,14 @@ public class NetworkManager {
                     }
                     setActiveWifiNetwork(foundWifi);
                     acquireLocks(context);
+                    ensureUpnpEventServer();
                     return foundWifi;
                 }
             }
         } catch (Exception e) {
             Log.w(TAG, "Error in bindProcessToWifi: " + e.getMessage());
         }
+        ensureUpnpEventServer();
         return activeWifiNetwork;
     }
 
@@ -142,6 +161,7 @@ public class NetworkManager {
                     }
                     setActiveWifiNetwork(network);
                     acquireLocks(context);
+                    ensureUpnpEventServer();
                     if (listener != null) {
                         listener.onWifiChanged(true, getCurrentWifiSsid(context), network);
                     }
@@ -188,6 +208,17 @@ public class NetworkManager {
             }
         } catch (Exception e) {
             Log.w(TAG, "Could not acquire locks: " + e.getMessage());
+        }
+    }
+
+    public static synchronized void ensureUpnpEventServer() {
+        if (upnpEventServer == null || !upnpEventServer.isAlive()) {
+            try {
+                upnpEventServer = new UpnpEventServer();
+                upnpEventServer.start();
+            } catch (Exception e) {
+                Log.w(TAG, "Could not start UpnpEventServer on port 8059: " + e.getMessage());
+            }
         }
     }
 
@@ -274,30 +305,41 @@ public class NetworkManager {
     }
 
     /**
+     * Returns the Wi-Fi NetworkInterface matching the phone's Wi-Fi IPv4 address
+     * for binding MulticastSockets to 239.255.255.250:1901 and 239.255.255.250:1900.
+     */
+    public static NetworkInterface getWifiNetworkInterface(Context context) {
+        try {
+            String localIp = getLocalIpAddress(context);
+            if (localIp != null) {
+                InetAddress addr = InetAddress.getByName(localIp);
+                NetworkInterface ni = NetworkInterface.getByInetAddress(addr);
+                if (ni != null) return ni;
+            }
+        } catch (Exception ignored) {}
+        try {
+            for (Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
+                NetworkInterface intf = en.nextElement();
+                String name = intf.getName().toLowerCase();
+                if ((name.contains("wlan") || name.contains("p2p") || name.contains("ap")) && intf.isUp()) {
+                    return intf;
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
      * Discovers all possible candidate IP addresses for the camera:
-     * 1. LinkProperties routes (gateway)
-     * 2. DhcpInfo gateway
-     * 3. DhcpInfo serverAddress (DHCP Server is the camera in AP mode!)
-     * 4. Derived subnet .1 from phone's IP
-     * 5. Known Samsung NX defaults: 192.168.107.1, 192.168.49.1, 192.168.1.1
+     * 1. LinkProperties routes (gateway on TRANSPORT_WIFI)
+     * 2. DhcpInfo serverAddress (DHCP Server is the camera in AP mode!)
+     * 3. DhcpInfo gateway
+     * 4. Derived subnet .1 from phone's Wi-Fi IP (e.g. 192.168.101.1, 192.168.102.1, 192.168.107.1)
+     * 5. Known Samsung NX defaults: 192.168.107.1, 192.168.101.1, 192.168.102.1, 192.168.49.1, 192.168.1.1, 192.168.0.1
      */
     public static List<String> getCandidateCameraIps(Context context) {
         List<String> list = new ArrayList<>();
         bindProcessToWifi(context);
-
-        String ssid = getCurrentWifiSsid(context);
-        boolean isCameraSsid = ssid != null && (
-                ssid.toUpperCase().contains("NX") ||
-                ssid.toUpperCase().contains("SEC_") ||
-                ssid.toUpperCase().contains("WB") ||
-                ssid.toUpperCase().contains("SM-") ||
-                ssid.toUpperCase().contains("DSC") ||
-                ssid.toUpperCase().contains("CAMERA"));
-
-        // If connected to a camera AP, 192.168.107.1 is the primary Samsung AP IP
-        if (isCameraSsid) {
-            list.add("192.168.107.1");
-        }
 
         // 1. LinkProperties routes (gateway on TRANSPORT_WIFI)
         try {
@@ -309,7 +351,7 @@ public class NetworkManager {
                         LinkProperties lp = cm.getLinkProperties(net);
                         if (lp != null) {
                             for (RouteInfo route : lp.getRoutes()) {
-                                if (route.hasGateway() && route.getGateway() != null) {
+                                if (route.hasGateway() && route.getGateway() != null && route.getGateway() instanceof Inet4Address) {
                                     String gw = route.getGateway().getHostAddress();
                                     if (gw != null && !gw.equals("0.0.0.0") && !gw.isEmpty() && isSensibleCameraIp(gw) && !list.contains(gw)) {
                                         list.add(gw);
@@ -362,25 +404,80 @@ public class NetworkManager {
             }
         }
 
-        // 4. Common Samsung NX defaults
-        if (!list.contains("192.168.107.1")) list.add("192.168.107.1");
-        if (!list.contains("192.168.49.1")) list.add("192.168.49.1");
-        if (!list.contains("192.168.1.1")) list.add("192.168.1.1");
+        // 4. Common Samsung NX / Smart Camera AP defaults
+        String[] defaults = new String[]{
+                "192.168.107.1",
+                "192.168.101.1",
+                "192.168.102.1",
+                "192.168.49.1",
+                "192.168.1.1",
+                "192.168.0.1"
+        };
+        for (String d : defaults) {
+            if (!list.contains(d)) {
+                list.add(d);
+            }
+        }
 
         return list;
     }
 
-    private static boolean isSensibleCameraIp(String ip) {
+    public static boolean isSensibleCameraIp(String ip) {
         if (ip == null || ip.isEmpty() || ip.equals("0.0.0.0")) return false;
-        if (ip.startsWith("127.") || ip.startsWith("169.254.")) return false;
-        if (ip.startsWith("192.168.107.") || ip.startsWith("192.168.49.") ||
-            ip.startsWith("192.168.1.") || ip.startsWith("192.168.0.")) {
-            return true;
-        }
-        // Exclude cellular carrier / mobile hotspot subnets
-        if (ip.startsWith("192.168.16.") || ip.startsWith("192.168.43.") || ip.startsWith("10.") || ip.startsWith("172.")) {
-            return false;
-        }
+        if (ip.startsWith("127.") || ip.startsWith("169.254.") || ip.startsWith("255.")) return false;
         return true;
+    }
+
+    /**
+     * Lightweight HTTP server on port 8059 (/evetSub) matching CyberGarage's
+     * HTTPServerList in both official Samsung APKs. Responds 200 OK to any
+     * UPnP GENA event callbacks or liveness probes from the NX1000 camera.
+     */
+    private static class UpnpEventServer extends Thread {
+        private ServerSocket serverSocket;
+        private volatile boolean running = true;
+
+        public UpnpEventServer() {
+            super("CyberGarage-UPnP-EventServer-8059");
+            setDaemon(true);
+        }
+
+        @Override
+        public void run() {
+            try {
+                serverSocket = new ServerSocket();
+                serverSocket.setReuseAddress(true);
+                serverSocket.bind(new InetSocketAddress(DEFAULT_EVENTSUB_PORT));
+                Log.i(TAG, "UPnP Event Server bound to port " + DEFAULT_EVENTSUB_PORT + " (" + DEFAULT_EVENTSUB_URI + ")");
+                while (running && !serverSocket.isClosed()) {
+                    try {
+                        final Socket client = serverSocket.accept();
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    client.setSoTimeout(2000);
+                                    InputStream in = client.getInputStream();
+                                    byte[] buf = new byte[1024];
+                                    in.read(buf);
+                                    OutputStream os = client.getOutputStream();
+                                    String resp = "HTTP/1.1 200 OK\r\n" +
+                                            "Server: Linux/2.6 UPnP/1.0 CyberLinkJava/1.8\r\n" +
+                                            "Content-Length: 0\r\n" +
+                                            "Connection: close\r\n\r\n";
+                                    os.write(resp.getBytes(StandardCharsets.US_ASCII));
+                                    os.flush();
+                                } catch (Exception ignored) {
+                                } finally {
+                                    try { client.close(); } catch (Exception ignored) {}
+                                }
+                            }
+                        }).start();
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "UPnP Event Server port 8059 bind notice: " + e.getMessage());
+            }
+        }
     }
 }
