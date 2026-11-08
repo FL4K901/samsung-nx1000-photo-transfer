@@ -114,6 +114,11 @@ public class ViewfinderClient {
         void onError(String error);
     }
 
+    public interface AutoFocusCallback {
+        void onAutoFocusSuccess(String afStatus);
+        void onAutoFocusFailed(String error);
+    }
+
     private static class UpnpEndpoint {
         final String host;
         final int port;
@@ -1956,15 +1961,89 @@ public class ViewfinderClient {
     }
 
     /**
-     * Triggers remote shutter capture on the Samsung NX1000.
-     *
-     * Reconstructed from LiveShutter.Shot_DSC() + LiveShutter$XxxThread:
-     * 1. Stops the live stream (stop_codec) before invoking Shot so the camera can transition to capture
-     * 2. Sends UPnP SOAP action "Shot" on urn:schemas-upnp-org:service:ContentDirectory:1
-     * 3. Parses <AFATGPSRESULT> (FileURL) and <AVAILSHOTSRESULT>, downloads review image if present
-     * 4. Restarts the live stream (GetLiveStream) automatically so the viewfinder resumes
+     * Reconstructed from Samsung LiveShutter$AFActTask:
+     * Triggers autofocus by sending UPnP SOAP action "MULTIAF" on urn:schemas-upnp-org:service:ContentDirectory:1.
+     * The camera drives its autofocus motor and responds with:
+     *   <AFSTATUS>0</AFSTATUS> (0 = focus locked; non-zero = hunting/failed)
+     *   <AF_MF>...</AF_MF>
      */
+    public static void triggerAutoFocus(final String cameraIp, final AutoFocusCallback callback) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final String ip = (cameraIp != null && !cameraIp.isEmpty()) ? cameraIp :
+                                  (activeCameraIp != null ? activeCameraIp : "192.168.107.1");
+
+                String soapBody =
+                        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
+                        "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" " +
+                        "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
+                        "<s:Body>\r\n" +
+                        "<u:MULTIAF xmlns:u=\"" + UPNP_SERVICE_CONTENT_DIR + "\" />\r\n" +
+                        "</s:Body>\r\n" +
+                        "</s:Envelope>\r\n";
+
+                String soapAction = "\"" + UPNP_SERVICE_CONTENT_DIR + "#MULTIAF\"";
+                String afResponse = null;
+
+                for (UpnpEndpoint ep : activeEndpoints) {
+                    String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
+                    String resp = sendSoapRequest(url, soapAction, soapBody, 4500);
+                    if (resp != null) {
+                        afResponse = resp;
+                        break;
+                    }
+                }
+
+                if (afResponse == null) {
+                    outer:
+                    for (int port : CANDIDATE_UPNP_PORTS) {
+                        for (String path : CANDIDATE_CONTROL_PATHS) {
+                            String url = "http://" + ip + ":" + port + path;
+                            String resp = sendSoapRequest(url, soapAction, soapBody, 2500);
+                            if (resp != null) {
+                                afResponse = resp;
+                                activeEndpoints.add(0, new UpnpEndpoint(ip, port, path, UPNP_SERVICE_CONTENT_DIR));
+                                break outer;
+                            }
+                        }
+                    }
+                }
+
+                if (afResponse != null) {
+                    String unescaped = unescapeXml(afResponse);
+                    String afStatus = extractXmlTag(unescaped, "AFSTATUS");
+                    Log.i(TAG, "MULTIAF completed. AFSTATUS=" + afStatus);
+                    if (callback != null) {
+                        if ("0".equals(afStatus) || afStatus != null) {
+                            callback.onAutoFocusSuccess(afStatus != null ? afStatus : "0");
+                        } else {
+                            callback.onAutoFocusFailed("AFSTATUS=" + afStatus);
+                        }
+                    }
+                } else {
+                    Log.w(TAG, "Camera did not respond to MULTIAF");
+                    if (callback != null) {
+                        callback.onAutoFocusFailed("Camera did not respond to autofocus command");
+                    }
+                }
+            }
+        }).start();
+    }
+
     public static void triggerShutter(final String cameraIp, final ShutterCallback callback) {
+        triggerShutter(cameraIp, true, callback);
+    }
+
+    /**
+     * Reconstructed from Samsung LiveShutter.Shot_DSC() + LiveShutter$37 + LiveShutter$XxxThread:
+     * 1. If autoFocusFirst is true, executes MULTIAF to lock focus before capture.
+     * 2. Stops the live stream socket (stop_codec) and waits 250ms so the camera DSP unbinds streaming.
+     * 3. Sends UPnP SOAP action "Shot" (parameterless <u:Shot/>) on urn:schemas-upnp-org:service:ContentDirectory:1.
+     * 4. Parses <AFSHOTRESULT> / <AFATGPSRESULT> (FileURL) and <AVAILSHOTS> / <AVAILSHOTSRESULT>.
+     * 5. Restarts the live stream automatically so the viewfinder resumes seamlessly.
+     */
+    public static void triggerShutter(final String cameraIp, final boolean autoFocusFirst, final ShutterCallback callback) {
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -1973,28 +2052,45 @@ public class ViewfinderClient {
                 final String ip = (cameraIp != null && !cameraIp.isEmpty()) ? cameraIp :
                                   (activeCameraIp != null ? activeCameraIp : "192.168.107.1");
 
-                // 1. Stop live stream before Shot (matching LiveShutter.stop_codec() before Shot_DSC())
+                // 1. Autofocus first if requested
+                if (autoFocusFirst) {
+                    Log.i(TAG, "triggerShutter: Executing pre-capture MULTIAF...");
+                    String afBody =
+                            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
+                            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" " +
+                            "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
+                            "<s:Body>\r\n" +
+                            "<u:MULTIAF xmlns:u=\"" + UPNP_SERVICE_CONTENT_DIR + "\" />\r\n" +
+                            "</s:Body>\r\n" +
+                            "</s:Envelope>\r\n";
+                    String afAction = "\"" + UPNP_SERVICE_CONTENT_DIR + "#MULTIAF\"";
+                    for (UpnpEndpoint ep : activeEndpoints) {
+                        String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
+                        String resp = sendSoapRequest(url, afAction, afBody, 3500);
+                        if (resp != null) {
+                            String unescaped = unescapeXml(resp);
+                            String afStatus = extractXmlTag(unescaped, "AFSTATUS");
+                            Log.i(TAG, "Pre-capture MULTIAF completed. AFSTATUS=" + afStatus);
+                            break;
+                        }
+                    }
+                }
+
+                // 2. Stop live stream before Shot (matching LiveShutter.stop_codec() before Shot_DSC())
+                // Crucial: Camera RTOS cannot stream H.264/AVI and capture full sensor resolution concurrently.
                 if (wasStreaming) {
                     stopLiveStream();
-                    try { Thread.sleep(120); } catch (InterruptedException ignored) {}
+                    try { Thread.sleep(250); } catch (InterruptedException ignored) {}
                 }
 
                 try {
+                    // Exact Samsung Shot action: parameterless <u:Shot xmlns:u="..."/>
                     String soapBody =
                             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
                             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" " +
                             "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\r\n" +
                             "<s:Body>\r\n" +
-                            "<u:Shot xmlns:u=\"" + UPNP_SERVICE_CONTENT_DIR + "\">\r\n" +
-                            "<Flash>" + MobileLinkClient.escapeXml(currentFlash) + "</Flash>\r\n" +
-                            "<Zoom>" + currentZoom + "</Zoom>\r\n" +
-                            "<ResolutionWidth>" + currentWidth + "</ResolutionWidth>\r\n" +
-                            "<ResolutionHeight>" + currentHeight + "</ResolutionHeight>\r\n" +
-                            "<Timer>0</Timer>\r\n" +
-                            "<Rotation>" + currentRotation + "</Rotation>\r\n" +
-                            "<TouchAF>0</TouchAF>\r\n" +
-                            "<SaveStorage>1</SaveStorage>\r\n" +
-                            "</u:Shot>\r\n" +
+                            "<u:Shot xmlns:u=\"" + UPNP_SERVICE_CONTENT_DIR + "\" />\r\n" +
                             "</s:Body>\r\n" +
                             "</s:Envelope>\r\n";
 
@@ -2002,10 +2098,10 @@ public class ViewfinderClient {
                     boolean shotTriggered = false;
                     String shotResponse = null;
 
-                    // Try active discovered endpoints first (timeout 15s since autofocus + exposure + SD write takes several seconds)
+                    // Timeout 20s for physical sensor exposure, raw/jpeg encoding, and SD card writing
                     for (UpnpEndpoint ep : activeEndpoints) {
                         String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
-                        String resp = sendSoapRequest(url, soapAction, soapBody, 15000);
+                        String resp = sendSoapRequest(url, soapAction, soapBody, 20000);
                         if (resp != null) {
                             shotTriggered = true;
                             shotResponse = resp;
@@ -2019,7 +2115,7 @@ public class ViewfinderClient {
                         for (int port : CANDIDATE_UPNP_PORTS) {
                             for (String path : CANDIDATE_CONTROL_PATHS) {
                                 String url = "http://" + ip + ":" + port + path;
-                                String resp = sendSoapRequest(url, soapAction, soapBody, 8000);
+                                String resp = sendSoapRequest(url, soapAction, soapBody, 10000);
                                 if (resp != null) {
                                     shotTriggered = true;
                                     shotResponse = resp;
@@ -2033,25 +2129,31 @@ public class ViewfinderClient {
                     if (shotTriggered) {
                         if (shotResponse != null) {
                             String unescaped = unescapeXml(shotResponse);
-                            String fileUrl = extractXmlTag(unescaped, "AFATGPSRESULT");
+                            String fileUrl = extractXmlTag(unescaped, "AFSHOTRESULT");
+                            if (fileUrl == null || fileUrl.trim().isEmpty()) {
+                                fileUrl = extractXmlTag(unescaped, "AFATGPSRESULT");
+                            }
                             if (fileUrl != null && !fileUrl.trim().isEmpty()) {
                                 lastCapturedFileUrl = fileUrl.trim();
-                                Log.i(TAG, "Shot returned <AFATGPSRESULT> FileURL=" + lastCapturedFileUrl);
+                                Log.i(TAG, "Shot returned FileURL=" + lastCapturedFileUrl);
                                 downloadCapturedThumbnailOrPhoto(lastCapturedFileUrl);
                             }
-                            String avail = extractXmlTag(unescaped, "AVAILSHOTSRESULT");
+                            String avail = extractXmlTag(unescaped, "AVAILSHOTS");
+                            if (avail == null || avail.trim().isEmpty()) {
+                                avail = extractXmlTag(unescaped, "AVAILSHOTSRESULT");
+                            }
                             if (avail != null && !avail.trim().isEmpty()) {
                                 availableShots = avail.trim();
                             }
                         }
-                        callback.onSuccess();
+                        if (callback != null) callback.onSuccess();
                     } else {
-                        callback.onError("Camera did not respond to Shot command");
+                        if (callback != null) callback.onError("Camera did not respond to Shot command");
                     }
                 } finally {
                     // Restart live stream automatically after Shot completes (matching LiveShutter.GetLiveStream())
                     if (wasStreaming && savedFrameCallback != null) {
-                        try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(300); } catch (InterruptedException ignored) {}
                         startLiveStream(ip, savedFrameCallback);
                     }
                 }
