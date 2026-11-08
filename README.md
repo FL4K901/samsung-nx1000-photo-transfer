@@ -1,6 +1,6 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.5.0-blue.svg)](release/NX-MobileLink-v1.5.0.apk)
+[![Release](https://img.shields.io/badge/Release-v1.5.1-blue.svg)](release/NX-MobileLink-v1.5.1.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 [![Attribution](https://img.shields.io/badge/Legal-Attribution-orange.svg)](ATTRIBUTION.md)
@@ -66,7 +66,7 @@ This application underwent a comprehensive OWASP security review and incorporate
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.5.0.apk](release/NX-MobileLink-v1.5.0.apk)**  
+👉 **[Download NX-MobileLink-v1.5.1.apk](release/NX-MobileLink-v1.5.1.apk)**  
 *(Also available as [NX-MobileLink.apk](release/NX-MobileLink.apk))*
 
 1. Transfer or download the APK to your Android device.
@@ -105,7 +105,7 @@ Requires Android SDK build-tools 34+ and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.5.0.apk`.
+The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.5.1.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -116,6 +116,16 @@ The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.5.1
+* **Remote Viewfinder Autofocus (MULTIAF) & Shutter Hang Fix**:
+  - Reconstructed genuine Samsung `MULTIAF` action on `urn:schemas-upnp-org:service:ContentDirectory:1` with `<AFSTATUS>` verification (`LiveShutter$AFActTask`).
+  - Fixed camera freeze during capture by removing invalid `<ResolutionWidth>`/`<ResolutionHeight>` tags from `Shot` action, adhering to the clean parameterless `<u:Shot/>` protocol.
+  - Implemented clean live stream socket shutdown (`stopLiveStream()`) and encoder flush delay before `Shot` to prevent NX1000 DSP deadlocks.
+  - Added session generation guards (`AtomicInteger sessionGeneration`) and owner-checked disconnect to prevent stale background threads from corrupting new connections.
+  - Converted active endpoints to thread-safe `CopyOnWriteArrayList`.
+  - Added tap-to-focus on the live viewfinder feed.
+  - Verified mutual compatibility with NX1000 firmware.
 
 ### Version 1.5.0
 * **Official Samsung Protocol Reverse-Engineering & Full Mutual Authentication**:
