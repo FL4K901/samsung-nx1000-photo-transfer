@@ -32,6 +32,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.util.List;
 
 /**
@@ -57,6 +58,18 @@ public class ViewfinderActivity extends Activity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean isConnecting = false;
     private String connectedCameraIp = null;
+    private boolean isFocusLocked = false;
+
+    private final Runnable focusReleaseRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isFocusLocked && connectedCameraIp != null) {
+                isFocusLocked = false;
+                ViewfinderClient.releaseFocus(connectedCameraIp);
+                updateStatusBanner();
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -139,19 +152,31 @@ public class ViewfinderActivity extends Activity {
             }
         });
 
+        // Tap on viewfinder viewport triggers autofocus
         imgPreview.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (connectedCameraIp == null) return;
+
+                mainHandler.removeCallbacks(focusReleaseRunnable);
                 txtStatusBadge.setText("🔍 Autofocusing...");
+                txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
+                txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
+
                 ViewfinderClient.triggerAutoFocus(connectedCameraIp, new ViewfinderClient.AutoFocusCallback() {
                     @Override
                     public void onAutoFocusSuccess(final String afStatus) {
                         mainHandler.post(new Runnable() {
                             @Override
                             public void run() {
+                                isFocusLocked = true;
                                 txtStatusBadge.setText("🟢 Focus Locked");
+                                txtStatusBadge.setBackgroundResource(R.drawable.badge_connected);
+                                txtStatusBadge.setTextColor(getResources().getColor(R.color.status_green_text));
                                 Toast.makeText(ViewfinderActivity.this, "Focus locked", Toast.LENGTH_SHORT).show();
+
+                                // Protocol rule: Auto-release focus after 8 seconds if no photo is taken
+                                mainHandler.postDelayed(focusReleaseRunnable, 8000);
                             }
                         });
                     }
@@ -161,7 +186,9 @@ public class ViewfinderActivity extends Activity {
                         mainHandler.post(new Runnable() {
                             @Override
                             public void run() {
+                                isFocusLocked = false;
                                 txtStatusBadge.setText("🟡 Focus Hunt");
+                                ViewfinderClient.releaseFocus(connectedCameraIp);
                             }
                         });
                     }
@@ -190,7 +217,9 @@ public class ViewfinderActivity extends Activity {
 
     private void updateStatusBanner() {
         if (connectedCameraIp != null) {
-            txtStatusBadge.setText("✓ Connected - Live Stream Active (" + connectedCameraIp + ")");
+            String shots = ViewfinderClient.getAvailableShots();
+            String shotsInfo = (shots != null && !shots.isEmpty()) ? " | Shots: " + shots : "";
+            txtStatusBadge.setText("✓ Connected - Live Stream Active (" + connectedCameraIp + shotsInfo + ")");
             txtStatusBadge.setBackgroundResource(R.drawable.badge_connected);
             txtStatusBadge.setTextColor(getResources().getColor(R.color.status_green_text));
         } else if (isConnectedToWifi()) {
@@ -355,47 +384,31 @@ public class ViewfinderActivity extends Activity {
             return;
         }
 
+        mainHandler.removeCallbacks(focusReleaseRunnable);
+        isFocusLocked = false;
+
         btnShutter.setEnabled(false);
         btnShutter.setAlpha(0.5f);
-        txtStatusBadge.setText("🔍 Autofocusing...");
-        Toast.makeText(this, "Autofocusing...", Toast.LENGTH_SHORT).show();
+        txtStatusBadge.setText("🔍 Focusing & Capturing photo...");
+        txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
+        txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
+        Toast.makeText(this, "Focusing & Capturing photo...", Toast.LENGTH_SHORT).show();
 
-        ViewfinderClient.triggerAutoFocus(connectedCameraIp, new ViewfinderClient.AutoFocusCallback() {
+        // Performs full, synchronized capture flow per protocol guide:
+        // MULTIAF -> Stop Live Stream -> Shot -> Resume Live Stream -> Download full image
+        ViewfinderClient.triggerShutter(connectedCameraIp, true, new ViewfinderClient.ShutterCallback() {
             @Override
-            public void onAutoFocusSuccess(final String afStatus) {
-                mainHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        txtStatusBadge.setText("📸 Capturing photo...");
-                        executeCapture();
-                    }
-                });
-            }
-
-            @Override
-            public void onAutoFocusFailed(final String error) {
-                mainHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        txtStatusBadge.setText("📸 Capturing photo...");
-                        executeCapture();
-                    }
-                });
-            }
-        });
-    }
-
-    private void executeCapture() {
-        ViewfinderClient.triggerShutter(connectedCameraIp, false, new ViewfinderClient.ShutterCallback() {
-            @Override
-            public void onSuccess() {
+            public void onSuccess(final String savedFilePath) {
                 mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
                         btnShutter.setEnabled(true);
                         btnShutter.setAlpha(1.0f);
-                        txtStatusBadge.setText("🟢 Photo captured successfully!");
-                        Toast.makeText(ViewfinderActivity.this, "Photo captured successfully!", Toast.LENGTH_SHORT).show();
+                        String fileName = (savedFilePath != null) ? new File(savedFilePath).getName() : "Success";
+                        txtStatusBadge.setText("🟢 Saved: " + fileName);
+                        txtStatusBadge.setBackgroundResource(R.drawable.badge_connected);
+                        txtStatusBadge.setTextColor(getResources().getColor(R.color.status_green_text));
+                        Toast.makeText(ViewfinderActivity.this, "Photo captured & saved to Gallery!", Toast.LENGTH_LONG).show();
                     }
                 });
             }
@@ -408,7 +421,9 @@ public class ViewfinderActivity extends Activity {
                         btnShutter.setEnabled(true);
                         btnShutter.setAlpha(1.0f);
                         txtStatusBadge.setText("⚠️ Capture: " + error);
-                        Toast.makeText(ViewfinderActivity.this, "Capture: " + error, Toast.LENGTH_SHORT).show();
+                        txtStatusBadge.setBackgroundResource(R.drawable.badge_disconnected);
+                        txtStatusBadge.setTextColor(getResources().getColor(R.color.status_red_text));
+                        Toast.makeText(ViewfinderActivity.this, "Capture notice: " + error, Toast.LENGTH_SHORT).show();
                     }
                 });
             }
@@ -416,7 +431,21 @@ public class ViewfinderActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        mainHandler.removeCallbacks(focusReleaseRunnable);
+        if (isFocusLocked && connectedCameraIp != null) {
+            isFocusLocked = false;
+            ViewfinderClient.releaseFocus(connectedCameraIp);
+        }
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(focusReleaseRunnable);
+        if (connectedCameraIp != null) {
+            ViewfinderClient.releaseFocus(connectedCameraIp);
+        }
         ViewfinderClient.disconnect();
         super.onDestroy();
     }

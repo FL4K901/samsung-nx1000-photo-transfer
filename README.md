@@ -1,6 +1,6 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.5.1-blue.svg)](release/NX-MobileLink-v1.5.1.apk)
+[![Release](https://img.shields.io/badge/Release-v1.5.3-blue.svg)](release/NX-MobileLink-v1.5.3.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 [![Attribution](https://img.shields.io/badge/Legal-Attribution-orange.svg)](ATTRIBUTION.md)
@@ -66,7 +66,7 @@ This application underwent a comprehensive OWASP security review and incorporate
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.5.1.apk](release/NX-MobileLink-v1.5.1.apk)**  
+👉 **[Download NX-MobileLink-v1.5.3.apk](release/NX-MobileLink-v1.5.3.apk)**  
 *(Also available as [NX-MobileLink.apk](release/NX-MobileLink.apk))*
 
 1. Transfer or download the APK to your Android device.
@@ -105,7 +105,7 @@ Requires Android SDK build-tools 34+ and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.5.1.apk`.
+The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.5.3.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -116,6 +116,17 @@ The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.5.3
+* **Complete Remote Viewfinder Protocol Specification Overhaul**:
+  - **Authentic User-Agent Compliance**: Reconstructed strict `SEC_RVF_<DEVICE_ID>` header format stripping colons from MAC address (e.g. `SEC_RVF_A1B2C3D4E5F6` or `SEC_RVF_UNKNOWN`), resolving Samsung firmware mutual authentication rejection.
+  - **Strict Command Serialization**: Implemented global reentrant command lock ensuring zero parallel SOAP request collisions, fully protecting the camera's single-threaded RTOS HTTP server against deadlocks.
+  - **Extended Hardware Timeouts**: Increased command execution timeouts to 30-35 seconds for `MULTIAF` and `Shot` actions to safely accommodate physical lens motor focusing and full-resolution SD card writing.
+  - **Dynamic Service & Endpoint Resolution**: Dynamic binding to discovered UPnP serviceType (`xmlns:u="<serviceType>"` and `SOAPAction: "<serviceType>#<Action>"`) and auto-resolution of relative stream URLs from `<GETIPRESULT>`.
+  - **Mandatory Focus Release (`ReleaseSelfTimer`)**: Implemented full `ReleaseSelfTimer` (`<RELEASETIMER>0</RELEASETIMER>`) action lifecycle, automatically unlocking lens motors on canceled shots, timeout, or screen exit.
+  - **Pre-Shot Live Stream Pausing**: Automatically unbinds live video socket before `Shot` to free camera DSP sensor resources, and cleanly resumes streaming post-capture.
+  - **Full-Resolution Photo Downloads**: Now downloads both preview thumbnail and original full-resolution photo to `DCIM/NX_MobileLink` with instant Android `MediaScanner` gallery indexing.
+  - **Comprehensive Dynamic Rotation**: Real-time support for physical camera orientation (`ssdp:rotationD`, `ssdp:rotationL`, `ssdp:rotationU`, `ssdp:rotationR` and numeric/Exif values).
 
 ### Version 1.5.1
 * **Remote Viewfinder Autofocus (MULTIAF) & Shutter Hang Fix**:

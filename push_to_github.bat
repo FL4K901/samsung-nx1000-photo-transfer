@@ -9,7 +9,7 @@ git push origin main --tags
 if %errorlevel% equ 0 (
     echo.
     echo ===================================================
-    echo  SUCCESS! Successfully uploaded v1.2.0 to GitHub!
+    echo  SUCCESS! Successfully uploaded v1.5.3 to GitHub!
     echo ===================================================
 ) else (
     echo.
