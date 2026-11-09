@@ -47,6 +47,7 @@ import java.net.InetSocketAddress;
 import java.net.MulticastSocket;
 import java.net.NetworkInterface;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -56,6 +57,7 @@ import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -91,6 +93,9 @@ public class ViewfinderClient {
 
     private static final String TAG = "ViewfinderClient";
 
+    public static final int SSDP_PORT_MOBILELINK = 1901;
+    public static final int SSDP_PORT_STANDARD = 1900;
+    public static final int SSDP_SEARCH_RESPONSE_PORT = 8009;
     private static final String SSDP_ADDRESS = "239.255.255.250";
     private static final int SSDP_PORT = 1900;
 
@@ -197,54 +202,82 @@ public class ViewfinderClient {
         return "192.168.107.1";
     }
 
+    private static String userAgent;
+
     /**
      * Exact User-Agent required by Samsung Remote Viewfinder firmware:
-     * "SEC_RVF_" + uppercase alphanumeric device id (MAC address WITHOUT colons)
-     * Fallback: "SEC_RVF_UNKNOWN"
+     * "SEC_RVF_" + 12-hex-character MAC address without colons (20 chars total).
+     * Generated using Samsung OUI prefix (485D60) and persisted in SharedPreferences.
      */
-    public static String getUserAgent() {
-        String cleanMac = getCleanMacAddress(appContext);
-        if (cleanMac != null && !cleanMac.isEmpty() && !cleanMac.equals("020000000000") && !cleanMac.equals("000000000000")) {
-            return "SEC_RVF_" + cleanMac.toUpperCase(Locale.US);
+    public static synchronized String getUserAgent() {
+        if (userAgent != null && userAgent.startsWith("SEC_RVF_") && userAgent.length() == 20) {
+            return userAgent;
         }
-        return "SEC_RVF_UNKNOWN";
-    }
-
-    private static String getCleanMacAddress(Context context) {
-        if (context != null) {
+        String id = null;
+        if (appContext != null) {
             try {
-                WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-                if (wm != null) {
-                    WifiInfo info = wm.getConnectionInfo();
-                    if (info != null) {
-                        String raw = info.getMacAddress();
-                        if (raw != null) {
-                            String stripped = raw.replaceAll("[^a-zA-Z0-9]", "");
-                            if (stripped.length() == 12 && !stripped.equalsIgnoreCase("020000000000")) {
-                                return stripped;
-                            }
-                        }
-                    }
+                android.content.SharedPreferences sp = appContext.getSharedPreferences("nx_link", Context.MODE_PRIVATE);
+                id = sp.getString("rvf_id", null);
+                if (id == null || id.length() != 12) {
+                    id = sp.getString("dsc_id", null);
+                }
+                if (id == null || id.length() != 12) {
+                    id = generate12HexMac();
+                    sp.edit().putString("rvf_id", id).apply();
                 }
             } catch (Exception ignored) {}
         }
+        if (id == null || id.length() != 12) {
+            id = generate12HexMac();
+        }
+        userAgent = "SEC_RVF_" + id.toUpperCase(Locale.US);
+        Log.i(TAG, "Remote Viewfinder User-Agent: " + userAgent);
+        return userAgent;
+    }
+
+    private static String generate12HexMac() {
         try {
-            List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
-            for (NetworkInterface nif : interfaces) {
-                if (!nif.getName().toLowerCase(Locale.US).contains("wlan")) continue;
-                byte[] macBytes = nif.getHardwareAddress();
-                if (macBytes == null || macBytes.length != 6) continue;
-                StringBuilder sb = new StringBuilder();
-                for (byte b : macBytes) {
-                    sb.append(String.format(Locale.US, "%02X", b));
-                }
-                String stripped = sb.toString();
-                if (!stripped.equalsIgnoreCase("020000000000") && !stripped.equalsIgnoreCase("000000000000")) {
-                    return stripped;
+            NetworkInterface wlan = NetworkInterface.getByName("wlan0");
+            if (wlan != null) {
+                byte[] mac = wlan.getHardwareAddress();
+                if (mac != null && mac.length == 6) {
+                    StringBuilder sb = new StringBuilder();
+                    for (byte b : mac) sb.append(String.format(Locale.US, "%02X", b));
+                    String s = sb.toString();
+                    if (!"000000000000".equals(s) && !"020000000000".equals(s)) {
+                        return s;
+                    }
                 }
             }
         } catch (Exception ignored) {}
-        return "UNKNOWN";
+        java.util.Random r = new java.security.SecureRandom();
+        StringBuilder sb = new StringBuilder("485D60");
+        for (int i = 0; i < 3; i++) {
+            sb.append(String.format(Locale.US, "%02X", r.nextInt(256)));
+        }
+        return sb.toString();
+    }
+
+    public static Socket createSocket() throws Exception {
+        Socket s = new Socket();
+        Network net = NetworkManager.getActiveWifiNetwork();
+        if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                net.bindSocket(s);
+            } catch (Exception ignored) {}
+        }
+        return s;
+    }
+
+    public static boolean isPortOpen(String host, int port, int timeoutMs) {
+        try {
+            Socket s = createSocket();
+            s.connect(new InetSocketAddress(host, port), timeoutMs);
+            s.close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static String getLocalWifiIp(Context context) {
@@ -285,6 +318,8 @@ public class ViewfinderClient {
     public static void connect(final Context context, final String cameraIp, final ConnectionCallback callback) {
         appContext = context.getApplicationContext();
         activeWifiNetwork = NetworkManager.bindProcessToWifi(appContext);
+        NetworkManager.acquireLocks(appContext);
+        NetworkManager.ensureUpnpEventServer();
         connect(cameraIp, callback);
     }
 
@@ -292,208 +327,329 @@ public class ViewfinderClient {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                WifiManager.MulticastLock multicastLock = null;
-                DatagramSocket searchSocket = null;
-                MulticastSocket notifySocket = null;
-                try {
-                    if (appContext != null) {
-                        Network wifiNet = NetworkManager.bindProcessToWifi(appContext);
-                        if (wifiNet != null) {
-                            activeWifiNetwork = wifiNet;
-                        }
-                        try {
-                            WifiManager wm = (WifiManager) appContext.getSystemService(Context.WIFI_SERVICE);
-                            if (wm != null) {
-                                multicastLock = wm.createMulticastLock("NX_RVF_SSDP");
-                                multicastLock.setReferenceCounted(true);
-                                multicastLock.acquire();
-                            }
-                        } catch (Exception ignored) {}
+                if (appContext != null) {
+                    activeWifiNetwork = NetworkManager.bindProcessToWifi(appContext);
+                    NetworkManager.acquireLocks(appContext);
+                    NetworkManager.ensureUpnpEventServer();
+                }
+
+                primaryEndpoint = null;
+                activeEndpoints.clear();
+                activeStreamUrl = null;
+
+                final AtomicBoolean resolved = new AtomicBoolean(false);
+                final Set<String> attemptedLocations = Collections.synchronizedSet(new java.util.HashSet<String>());
+
+                final List<String> candidateIps = new ArrayList<>();
+                if (cameraIp != null && !cameraIp.trim().isEmpty()) {
+                    candidateIps.add(cameraIp.trim());
+                }
+                if (appContext != null) {
+                    for (String ip : NetworkManager.getCandidateCameraIps(appContext)) {
+                        if (!candidateIps.contains(ip)) candidateIps.add(ip);
                     }
+                }
+                if (candidateIps.isEmpty()) {
+                    candidateIps.add("192.168.107.1");
+                }
+                activeCameraIp = candidateIps.get(0);
 
-                    primaryEndpoint = null;
-                    activeEndpoints.clear();
-                    activeStreamUrl = null;
-                    activeCameraIp = (cameraIp != null && !cameraIp.trim().isEmpty()) ? cameraIp.trim() : "192.168.107.1";
+                final int[] candidatePorts = new int[]{7676, 52235, 49152, 7678, 80};
+                final long startTime = System.currentTimeMillis();
+                final long deadline = startTime + 10000;
 
-                    final String localIp = getLocalWifiIp(appContext);
-                    final String ua = getUserAgent();
-                    final AtomicBoolean deviceDiscovered = new AtomicBoolean(false);
-
-                    // 1. Start SSDP Multicast Listener on port 1900 for NOTIFY ssdp:alive & rotation
-                    try {
-                        notifySocket = new MulticastSocket(null);
-                        notifySocket.setReuseAddress(true);
-                        notifySocket.bind(new InetSocketAddress(SSDP_PORT));
-                        NetworkInterface wlanIf = findWifiNetworkInterface(localIp);
-                        InetAddress group = InetAddress.getByName(SSDP_ADDRESS);
-                        if (wlanIf != null) {
-                            notifySocket.joinGroup(new InetSocketAddress(group, SSDP_PORT), wlanIf);
-                        } else {
-                            notifySocket.joinGroup(group);
-                        }
-                        notifySocket.setSoTimeout(1000);
-                    } catch (Exception e) {
-                        Log.w(TAG, "Multicast listener setup notice: " + e.getMessage());
+                // 1. Multicast NOTIFY listener on port 1901 (Samsung MobileLink/RVF port)
+                Thread notify1901Thread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        listenSsdpMulticastNotify(SSDP_PORT_MOBILELINK, 8500, resolved, attemptedLocations);
                     }
+                }, "NX-RVF-SSDP-Notify-1901");
+                notify1901Thread.start();
 
-                    // 2. Open Unicast SSDP socket for M-SEARCH
-                    searchSocket = new DatagramSocket(null);
-                    searchSocket.setReuseAddress(true);
-                    searchSocket.bind(new InetSocketAddress(localIp, 0));
-                    if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= 22) {
-                        try {
-                            activeWifiNetwork.bindSocket(searchSocket);
-                        } catch (Exception ignored) {}
+                // 2. Multicast NOTIFY listener on port 1900 (Standard UPnP port)
+                Thread notify1900Thread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        listenSsdpMulticastNotify(SSDP_PORT_STANDARD, 8500, resolved, attemptedLocations);
                     }
-                    searchSocket.setSoTimeout(800);
+                }, "NX-RVF-SSDP-Notify-1900");
+                notify1900Thread.start();
 
-                    String[] searchTargets = {
-                        "ssdp:all",
-                        "upnp:rootdevice",
-                        "urn:schemas-upnp-org:device:MediaServer:1",
-                        UPNP_SERVICE_CONTENT_DIR,
-                        "urn:schemas-upnp-org:service:ConnectionManager:1"
-                    };
-
-                    long startMs = System.currentTimeMillis();
-                    byte[] rxBuf = new byte[8192];
-
-                    // Discover via SSDP for up to 6 seconds (or until device description XML is fetched)
-                    while (System.currentTimeMillis() - startMs < 6000 && !deviceDiscovered.get()) {
-                        for (String st : searchTargets) {
-                            String mSearch = "M-SEARCH * HTTP/1.1\r\n" +
-                                    "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT + "\r\n" +
-                                    "MAN: \"ssdp:discover\"\r\n" +
-                                    "MX: 3\r\n" +
-                                    "ST: " + st + "\r\n" +
-                                    "USER-AGENT: " + ua + "\r\n\r\n";
-                            byte[] tx = mSearch.getBytes(StandardCharsets.UTF_8);
-                            try {
-                                searchSocket.send(new DatagramPacket(tx, tx.length, InetAddress.getByName(SSDP_ADDRESS), SSDP_PORT));
-                            } catch (Exception ignored) {}
-                            if (activeCameraIp != null && !activeCameraIp.isEmpty()) {
-                                try {
-                                    searchSocket.send(new DatagramPacket(tx, tx.length, InetAddress.getByName(activeCameraIp), SSDP_PORT));
-                                } catch (Exception ignored) {}
-                            }
-                        }
-
-                        // Read M-SEARCH replies
-                        long readEnd = System.currentTimeMillis() + 900;
-                        while (System.currentTimeMillis() < readEnd && !deviceDiscovered.get()) {
-                            try {
-                                DatagramPacket pkt = new DatagramPacket(rxBuf, rxBuf.length);
-                                searchSocket.receive(pkt);
-                                String msg = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8);
-                                String senderIp = pkt.getAddress().getHostAddress();
-                                checkSsdpRotation(msg);
-                                if (senderIp != null && !senderIp.equals(localIp)) {
-                                    if (handleSsdpPacket(msg, senderIp, localIp)) {
-                                        deviceDiscovered.set(true);
-                                        break;
-                                    }
-                                }
-                            } catch (Exception ignored) {
-                                break;
-                            }
-                        }
-
-                        // Also check Multicast NOTIFY socket
-                        if (notifySocket != null && !deviceDiscovered.get()) {
-                            try {
-                                DatagramPacket pkt = new DatagramPacket(rxBuf, rxBuf.length);
-                                notifySocket.receive(pkt);
-                                String msg = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8);
-                                String senderIp = pkt.getAddress().getHostAddress();
-                                checkSsdpRotation(msg);
-                                if (senderIp != null && !senderIp.equals(localIp)) {
-                                    if (handleSsdpPacket(msg, senderIp, localIp)) {
-                                        deviceDiscovered.set(true);
-                                        break;
-                                    }
-                                }
-                            } catch (Exception ignored) {}
-                        }
+                // 3. Active M-SEARCH sender & response listener on port 8009
+                Thread searchThread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        performSsdpSearchLoop(8500, candidateIps, resolved, attemptedLocations);
                     }
+                }, "NX-RVF-SSDP-Search-8009");
+                searchThread.start();
 
-                    // 3. Fallback: If SSDP multicast was blocked by OEM firewall, probe known Samsung UPnP description XML paths
-                    if (!deviceDiscovered.get()) {
-                        List<String> candidateIps = new ArrayList<>();
-                        if (activeCameraIp != null && !activeCameraIp.isEmpty()) {
-                            candidateIps.add(activeCameraIp);
-                        }
-                        if (appContext != null) {
-                            for (String ip : NetworkManager.getCandidateCameraIps(appContext)) {
-                                if (!candidateIps.contains(ip)) candidateIps.add(ip);
-                            }
-                        }
-                        String[] xmlPaths = {"/smp_2_", "/smp_1_", "/smp_4_", "/smp_5_", "/description.xml", "/rootDesc.xml"};
-                        int[] xmlPorts = {7676, 7678, 52235, 49152, 49153, 8080};
+                // 4. Give SSDP priority for 1.8s (unless user specified custom cameraIp)
+                if (cameraIp == null || cameraIp.trim().isEmpty()) {
+                    long ssdpPriorityEnd = startTime + 1800;
+                    while (!resolved.get() && System.currentTimeMillis() < ssdpPriorityEnd) {
+                        try { Thread.sleep(150); } catch (InterruptedException ignored) { break; }
+                    }
+                }
 
-                        outer:
-                        for (String ip : candidateIps) {
-                            for (int port : xmlPorts) {
-                                for (String path : xmlPaths) {
-                                    String loc = "http://" + ip + ":" + port + path.trim();
-                                    try {
-                                        String xml = HumbleHttpClient.httpGetXml(activeWifiNetwork, loc, ua, 1200);
-                                        if (xml != null && (xml.contains("ContentDirectory") || xml.contains("serviceList") || xml.contains("GetInfomation"))) {
-                                            Log.i(TAG, "Direct XML probe succeeded at " + loc);
-                                            activeCameraIp = ip;
-                                            parseDeviceDescriptionXml(xml, loc, ip, port, localIp);
-                                            deviceDiscovered.set(true);
-                                            break outer;
-                                        }
-                                    } catch (Exception ignored) {}
+                // 5. Active TCP probe fallback
+                while (!resolved.get() && System.currentTimeMillis() < deadline) {
+                    for (String ip : candidateIps) {
+                        if (resolved.get()) break;
+                        for (int p : candidatePorts) {
+                            if (resolved.get()) break;
+                            if (isPortOpen(ip, p, 250)) {
+                                Log.i(TAG, "Port " + p + " is open on " + ip + "! Probing UPnP description...");
+                                if (probeHttpEndpoint(ip, p, attemptedLocations, resolved)) {
+                                    break;
                                 }
                             }
                         }
                     }
+                    if (resolved.get()) break;
+                    try { Thread.sleep(400); } catch (InterruptedException ignored) { break; }
+                }
 
-                    // 4. Execute GetInfomation SOAP Action in a retry loop (matching LiveShutter$32: up to 25 attempts, 250ms interval)
-                    // The camera transitions out of its "Waiting" screen when <LOCATION> and <SCPDURL> are fetched,
-                    // and starts its live stream server when GetInfomation succeeds!
-                    boolean infoSuccess = false;
-                    for (int attempt = 1; attempt <= 25; attempt++) {
+                notify1901Thread.interrupt();
+                notify1900Thread.interrupt();
+                searchThread.interrupt();
+
+                // 6. Execute GetInfomation SOAP Action in a retry loop
+                boolean infoSuccess = false;
+                if (resolved.get() || !activeEndpoints.isEmpty() || primaryEndpoint != null) {
+                    for (int attempt = 1; attempt <= 15; attempt++) {
                         if (executeGetInformation(activeCameraIp)) {
                             infoSuccess = true;
                             Log.i(TAG, "GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
                             break;
                         }
-                        try {
-                            Thread.sleep(250);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
+                        try { Thread.sleep(200); } catch (InterruptedException ignored) { break; }
                     }
+                }
 
-                    if (infoSuccess && activeStreamUrl != null && !activeStreamUrl.isEmpty()) {
-                        callback.onConnected(activeCameraIp);
-                    } else if (infoSuccess) {
-                        activeStreamUrl = "http://" + activeCameraIp + ":7678/stream.avi";
-                        callback.onConnected(activeCameraIp);
-                    } else {
-                        callback.onConnectionFailed("Could not initialize Remote Viewfinder session (GetInfomation failed). Please ensure the camera is in Remote Viewfinder mode and connected to its Wi-Fi.");
-                    }
-
-                } catch (Exception e) {
-                    Log.e(TAG, "Viewfinder connect error", e);
-                    callback.onConnectionFailed("Connection error: " + e.getMessage());
-                } finally {
-                    if (searchSocket != null) {
-                        try { searchSocket.close(); } catch (Exception ignored) {}
-                    }
-                    if (notifySocket != null) {
-                        try { notifySocket.close(); } catch (Exception ignored) {}
-                    }
-                    if (multicastLock != null && multicastLock.isHeld()) {
-                        try { multicastLock.release(); } catch (Exception ignored) {}
-                    }
+                if (infoSuccess && activeStreamUrl != null && !activeStreamUrl.isEmpty()) {
+                    callback.onConnected(activeCameraIp);
+                } else if (infoSuccess) {
+                    activeStreamUrl = "http://" + activeCameraIp + ":7678/stream.avi";
+                    callback.onConnected(activeCameraIp);
+                } else {
+                    callback.onConnectionFailed("Camera not found in Remote Viewfinder mode. Please make sure the camera is in Remote Viewfinder mode and your phone is connected to its Wi-Fi.");
                 }
             }
         }, "NX-RVF-ConnectThread").start();
+    }
+
+    private static void listenSsdpMulticastNotify(int port, int timeoutMs, AtomicBoolean resolved, Set<String> attemptedLocations) {
+        MulticastSocket mSock = null;
+        try {
+            mSock = new MulticastSocket(null);
+            mSock.setReuseAddress(true);
+            mSock.bind(new InetSocketAddress(port));
+
+            InetAddress group = InetAddress.getByName(SSDP_ADDRESS);
+            NetworkInterface wifiIf = NetworkManager.getWifiNetworkInterface(appContext);
+            if (wifiIf != null) {
+                try {
+                    mSock.joinGroup(new InetSocketAddress(group, port), wifiIf);
+                } catch (Exception e) {
+                    mSock.joinGroup(group);
+                }
+            } else {
+                mSock.joinGroup(group);
+            }
+
+            mSock.setSoTimeout(500);
+            byte[] buf = new byte[4096];
+            long deadline = System.currentTimeMillis() + timeoutMs;
+
+            while (!resolved.get() && System.currentTimeMillis() < deadline) {
+                try {
+                    DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+                    mSock.receive(pkt);
+                    String msg = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8);
+                    checkSsdpRotation(msg);
+                    String nts = extractHttpHeader(msg, "NTS");
+                    if (nts != null && nts.toLowerCase(Locale.US).contains("byebye")) {
+                        continue;
+                    }
+                    String location = extractHttpHeader(msg, "LOCATION");
+                    if (location != null && !location.isEmpty() && attemptedLocations.add(location)) {
+                        Log.i(TAG, "SSDP NOTIFY on port " + port + " -> LOCATION: " + location);
+                        if (fetchAndParseDeviceDescription(location)) {
+                            resolved.set(true);
+                            return;
+                        }
+                    }
+                } catch (SocketTimeoutException ignored) {}
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "Multicast listener on port " + port + " notice: " + e.getMessage());
+        } finally {
+            if (mSock != null && !mSock.isClosed()) {
+                try { mSock.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private static void performSsdpSearchLoop(int timeoutMs, List<String> candidateIps, AtomicBoolean resolved, Set<String> attemptedLocations) {
+        DatagramSocket socket = null;
+        try {
+            try {
+                socket = new DatagramSocket(null);
+                socket.setReuseAddress(true);
+                socket.bind(new InetSocketAddress(SSDP_SEARCH_RESPONSE_PORT));
+            } catch (Exception e) {
+                socket = new DatagramSocket();
+            }
+
+            Network net = NetworkManager.getActiveWifiNetwork();
+            if (net != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                try { net.bindSocket(socket); } catch (Exception ignored) {}
+            }
+            socket.setSoTimeout(500);
+
+            String ua = getUserAgent();
+            byte[] search1901All = (
+                    "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_MOBILELINK + "\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 3\r\n" +
+                    "ST: ssdp:all\r\n" +
+                    "USER-AGENT: " + ua + "\r\n\r\n"
+            ).getBytes(StandardCharsets.UTF_8);
+
+            byte[] search1901Root = (
+                    "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_MOBILELINK + "\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 3\r\n" +
+                    "ST: upnp:rootdevice\r\n" +
+                    "USER-AGENT: " + ua + "\r\n\r\n"
+            ).getBytes(StandardCharsets.UTF_8);
+
+            byte[] search1900All = (
+                    "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_STANDARD + "\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 3\r\n" +
+                    "ST: ssdp:all\r\n" +
+                    "USER-AGENT: " + ua + "\r\n\r\n"
+            ).getBytes(StandardCharsets.UTF_8);
+
+            byte[] search1900Root = (
+                    "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_STANDARD + "\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 3\r\n" +
+                    "ST: upnp:rootdevice\r\n" +
+                    "USER-AGENT: " + ua + "\r\n\r\n"
+            ).getBytes(StandardCharsets.UTF_8);
+
+            InetAddress multicastGroup = InetAddress.getByName(SSDP_ADDRESS);
+            byte[] buf = new byte[4096];
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            long nextSendTime = 0;
+
+            while (!resolved.get() && System.currentTimeMillis() < deadline) {
+                long now = System.currentTimeMillis();
+                if (now >= nextSendTime) {
+                    nextSendTime = now + 1000;
+                    try { socket.send(new DatagramPacket(search1901All, search1901All.length, multicastGroup, SSDP_PORT_MOBILELINK)); } catch (Exception ignored) {}
+                    try { socket.send(new DatagramPacket(search1901Root, search1901Root.length, multicastGroup, SSDP_PORT_MOBILELINK)); } catch (Exception ignored) {}
+                    try { socket.send(new DatagramPacket(search1900All, search1900All.length, multicastGroup, SSDP_PORT_STANDARD)); } catch (Exception ignored) {}
+                    try { socket.send(new DatagramPacket(search1900Root, search1900Root.length, multicastGroup, SSDP_PORT_STANDARD)); } catch (Exception ignored) {}
+
+                    if (candidateIps != null) {
+                        for (int i = 0; i < Math.min(candidateIps.size(), 4); i++) {
+                            try {
+                                InetAddress cip = InetAddress.getByName(candidateIps.get(i));
+                                socket.send(new DatagramPacket(search1901All, search1901All.length, cip, SSDP_PORT_MOBILELINK));
+                                socket.send(new DatagramPacket(search1900All, search1900All.length, cip, SSDP_PORT_STANDARD));
+                            } catch (Exception ignored) {}
+                        }
+                    }
+                }
+
+                try {
+                    DatagramPacket recv = new DatagramPacket(buf, buf.length);
+                    socket.receive(recv);
+                    String resp = new String(recv.getData(), 0, recv.getLength(), StandardCharsets.UTF_8);
+                    checkSsdpRotation(resp);
+                    String location = extractHttpHeader(resp, "LOCATION");
+                    if (location != null && !location.isEmpty() && attemptedLocations.add(location)) {
+                        Log.i(TAG, "SSDP M-SEARCH response -> LOCATION: " + location);
+                        if (fetchAndParseDeviceDescription(location)) {
+                            resolved.set(true);
+                            return;
+                        }
+                    }
+                } catch (SocketTimeoutException ignored) {}
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "SSDP search loop notice: " + e.getMessage());
+        } finally {
+            if (socket != null && !socket.isClosed()) {
+                try { socket.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private static boolean fetchAndParseDeviceDescription(String locationUrl) {
+        if (!isSafeCameraUrl(locationUrl)) return false;
+        try {
+            URL url = new URL(locationUrl);
+            String host = url.getHost();
+            int port = url.getPort() != -1 ? url.getPort() : 80;
+            activeCameraIp = host;
+            String localIp = getLocalWifiIp(appContext);
+
+            String xml = HumbleHttpClient.httpGetXml(activeWifiNetwork, locationUrl, getUserAgent(), 3000);
+            if (xml != null && !xml.isEmpty()) {
+                parseDeviceDescriptionXml(xml, locationUrl, host, port, localIp);
+                return !activeEndpoints.isEmpty() || primaryEndpoint != null;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "fetchAndParseDeviceDescription notice: " + e.getMessage());
+        }
+        return false;
+    }
+
+    private static boolean probeHttpEndpoint(String ip, int port, Set<String> attemptedLocations, AtomicBoolean resolved) {
+        String[] paths = new String[]{
+                "/smp_2_",
+                "/smp_6_",
+                "/description.xml",
+                "/rootDesc.xml",
+                "/smp_4_",
+                "/smp_10_",
+                "/upnp/ContentDirectory.xml"
+        };
+        for (String p : paths) {
+            String testUrl = "http://" + ip + ":" + port + p;
+            if (!attemptedLocations.add(testUrl)) continue;
+            if (fetchAndParseDeviceDescription(testUrl)) {
+                resolved.set(true);
+                return true;
+            }
+        }
+        // Direct SOAP probing if description paths failed
+        String[] directControlPaths = {"/smp_4_", "/smp_3_", "/smp_7_", "/smp_2_"};
+        String serviceType = UPNP_SERVICE_CONTENT_DIR;
+        String soapBody = buildSoapEnvelope(serviceType, "GetInfomation", null);
+        String soapAction = "\"" + serviceType + "#GetInfomation\"";
+        for (String cp : directControlPaths) {
+            String url = "http://" + ip + ":" + port + cp;
+            String response = sendSoapRequest(url, soapAction, soapBody, 1500);
+            if (response != null && parseGetInformationResponse(response, ip, port)) {
+                UpnpEndpoint ep = new UpnpEndpoint(ip, port, cp, serviceType);
+                primaryEndpoint = ep;
+                activeEndpoints.add(0, ep);
+                resolved.set(true);
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void checkSsdpRotation(String msg) {
@@ -781,6 +937,7 @@ public class ViewfinderClient {
                 String soapBody = buildSoapEnvelope(serviceType, "GetInfomation", null);
                 String soapAction = "\"" + serviceType + "#GetInfomation\"";
                 for (int port : CANDIDATE_UPNP_PORTS) {
+                    if (!isPortOpen(cameraIp, port, 250)) continue;
                     for (String path : CANDIDATE_CONTROL_PATHS) {
                         String url = "http://" + cameraIp + ":" + port + path;
                         String response = sendSoapRequest(url, soapAction, soapBody, 1500);

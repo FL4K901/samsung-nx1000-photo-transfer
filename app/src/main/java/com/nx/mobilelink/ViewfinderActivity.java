@@ -71,6 +71,18 @@ public class ViewfinderActivity extends Activity {
         }
     };
 
+    private final Runnable connectionWatchdogRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isConnecting && connectedCameraIp == null) {
+                isConnecting = false;
+                progressScan.setVisibility(View.GONE);
+                btnConnect.setEnabled(true);
+                updateStatusBanner();
+            }
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -304,18 +316,9 @@ public class ViewfinderActivity extends Activity {
         txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
         txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
 
-        // Safety watchdog: reset isConnecting after 15 seconds if neither callback fired
-        mainHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (isConnecting && connectedCameraIp == null) {
-                    isConnecting = false;
-                    progressScan.setVisibility(View.GONE);
-                    btnConnect.setEnabled(true);
-                    updateStatusBanner();
-                }
-            }
-        }, 15000);
+        // Safety watchdog: reset isConnecting after 25 seconds if neither callback fired
+        mainHandler.removeCallbacks(connectionWatchdogRunnable);
+        mainHandler.postDelayed(connectionWatchdogRunnable, 25000);
 
         ViewfinderClient.connect(this, customIp, new ViewfinderClient.ConnectionCallback() {
             @Override
@@ -323,6 +326,7 @@ public class ViewfinderActivity extends Activity {
                 mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
+                        mainHandler.removeCallbacks(connectionWatchdogRunnable);
                         isConnecting = false;
                         progressScan.setVisibility(View.GONE);
                         btnConnect.setEnabled(true);
@@ -341,6 +345,7 @@ public class ViewfinderActivity extends Activity {
                 mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
+                        mainHandler.removeCallbacks(connectionWatchdogRunnable);
                         isConnecting = false;
                         progressScan.setVisibility(View.GONE);
                         btnConnect.setEnabled(true);
@@ -443,6 +448,7 @@ public class ViewfinderActivity extends Activity {
     @Override
     protected void onDestroy() {
         mainHandler.removeCallbacks(focusReleaseRunnable);
+        mainHandler.removeCallbacks(connectionWatchdogRunnable);
         if (connectedCameraIp != null) {
             ViewfinderClient.releaseFocus(connectedCameraIp);
         }
