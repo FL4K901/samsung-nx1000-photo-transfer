@@ -1,11 +1,13 @@
 $ErrorActionPreference = "Stop"
 
-$BUILD_TOOLS = "C:\Users\User\AppData\Local\Android\Sdk\build-tools\36.0.0"
-$PLATFORM = "C:\Users\User\AppData\Local\Android\Sdk\platforms\android-34\android.jar"
+$LOCALAPPDATA = $env:LOCALAPPDATA
+$USERPROFILE = $env:USERPROFILE
+$BUILD_TOOLS = if (Test-Path "$LOCALAPPDATA\Android\Sdk\build-tools\36.0.0") { "$LOCALAPPDATA\Android\Sdk\build-tools\36.0.0" } elseif ($env:ANDROID_HOME) { "$env:ANDROID_HOME\build-tools\36.0.0" } else { "$LOCALAPPDATA\Android\Sdk\build-tools\36.0.0" }
+$PLATFORM = if (Test-Path "$LOCALAPPDATA\Android\Sdk\platforms\android-34\android.jar") { "$LOCALAPPDATA\Android\Sdk\platforms\android-34\android.jar" } elseif ($env:ANDROID_HOME) { "$env:ANDROID_HOME\platforms\android-34\android.jar" } else { "$LOCALAPPDATA\Android\Sdk\platforms\android-34\android.jar" }
 $JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
 $env:JAVA_HOME = $JAVA_HOME
 $env:PATH = "$JAVA_HOME\bin;$env:PATH"
-$KEYSTORE = "C:\Users\User\.android\debug.keystore"
+$KEYSTORE = "$USERPROFILE\.android\debug.keystore"
 $PROJECT_DIR = $PSScriptRoot
 
 Set-Location $PROJECT_DIR
@@ -57,9 +59,9 @@ Write-Host "9. Verifying signature..."
 & "$BUILD_TOOLS\apksigner.bat" verify -v release\NX-MobileLink-v1.5.3.apk
 
 Copy-Item -Force "release\NX-MobileLink-v1.5.3.apk" "release\NX-MobileLink.apk"
-Copy-Item -Force "release\NX-MobileLink-v1.5.3.apk" "C:\Users\User\Downloads\NX-MobileLink.apk"
-Copy-Item -Force "release\NX-MobileLink-v1.5.3.apk" "C:\Users\User\Downloads\NX-MobileLink-v1.5.3.apk"
-Copy-Item -Force "release\NX-MobileLink-v1.5.3.apk" "c:\Users\User\Desktop\mobilelinknew\NX-MobileLink.apk"
-Copy-Item -Force "release\NX-MobileLink-v1.5.3.apk" "c:\Users\User\Desktop\mobilelinknew\nx_app\NX-MobileLink.apk"
+if (Test-Path "$USERPROFILE\Downloads") {
+    Copy-Item -Force "release\NX-MobileLink-v1.5.3.apk" "$USERPROFILE\Downloads\NX-MobileLink.apk"
+    Copy-Item -Force "release\NX-MobileLink-v1.5.3.apk" "$USERPROFILE\Downloads\NX-MobileLink-v1.5.3.apk"
+}
 
 Write-Host "BUILD SUCCESSFUL! Output: release\NX-MobileLink-v1.5.3.apk (Size: $((Get-Item release\NX-MobileLink-v1.5.3.apk).Length) bytes)"
