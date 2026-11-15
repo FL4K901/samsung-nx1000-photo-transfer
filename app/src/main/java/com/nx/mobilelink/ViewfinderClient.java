@@ -60,6 +60,8 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -368,7 +370,7 @@ public class ViewfinderClient {
                 // Step 1: Direct GET /smp_2_ with exact SEC_RVF_<DEVICE_ID> User-Agent
                 // Signals camera firmware to transition out of the "Waiting for smartphone" screen
                 String primaryDescUrl = "http://" + primaryIp + ":7676/smp_2_";
-                String rootXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, primaryDescUrl, getUserAgent(), 1500);
+                String rootXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, primaryDescUrl, getUserAgent(), 2500);
                 if (rootXml != null && !rootXml.isEmpty()) {
                     Log.i(TAG, "Fast-path: Root XML received from " + primaryIp);
                     String localIp = getLocalWifiIp(appContext);
@@ -376,15 +378,15 @@ public class ViewfinderClient {
                     resolved.set(true);
                 }
 
-                // Step 2: Direct GetInfomation SOAP Action (up to 3 rapid attempts, 150ms apart)
+                // Step 2: Direct GetInfomation SOAP Action (up to 4 attempts, 250ms apart)
                 boolean fastInfoSuccess = false;
-                for (int attempt = 1; attempt <= 3; attempt++) {
+                for (int attempt = 1; attempt <= 4; attempt++) {
                     if (executeGetInformation(primaryIp)) {
                         fastInfoSuccess = true;
                         Log.i(TAG, "Fast-path: GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
                         break;
                     }
-                    try { Thread.sleep(150); } catch (InterruptedException ignored) { break; }
+                    try { Thread.sleep(250); } catch (InterruptedException ignored) { break; }
                 }
 
                 if (fastInfoSuccess) {
@@ -392,7 +394,7 @@ public class ViewfinderClient {
                         activeStreamUrl = "http://" + primaryIp + ":7679/livestream.avi";
                     }
                     activeCameraIp = primaryIp;
-                    Log.i(TAG, "RVF Fast Handshake SUCCESS in <100ms! Camera IP: " + primaryIp);
+                    Log.i(TAG, "RVF Fast Handshake SUCCESS! Camera IP: " + primaryIp);
                     callback.onConnected(primaryIp);
                     return;
                 }
@@ -828,20 +830,6 @@ public class ViewfinderClient {
 
                 String st = (serviceType != null && !serviceType.isEmpty()) ? serviceType : UPNP_SERVICE_CONTENT_DIR;
 
-                // Fetch SCPDURL only for primary ContentDirectory service (/smp_3_),
-                // matching MobileLinkClient.java and LiveShutter.checkDevice in remote-viewfinder-2-2-11-multi-android.apk.
-                if (scpdUrl != null && !scpdUrl.isEmpty() && (st.contains("ContentDirectory") || st.contains("RemoteViewfinder"))) {
-                    String fullScpd = resolveRelativeUrl(baseUrl, locationUrl, scpdUrl);
-                    if (isSafeCameraUrl(fullScpd)) {
-                        try {
-                            fetchedScpdXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, fullScpd, getUserAgent(), 2000);
-                            if (fetchedScpdXml != null && (fetchedScpdXml.contains("GetInfomation") || fetchedScpdXml.contains("Shot") || fetchedScpdXml.contains("MULTIAF"))) {
-                                hasGetInfoOrShot = true;
-                            }
-                        } catch (Exception ignored) {}
-                    }
-                }
-
                 if (controlUrl != null && !controlUrl.isEmpty()) {
                     String normControl = controlUrl;
                     int epPort = basePort;
@@ -857,9 +845,30 @@ public class ViewfinderClient {
                         normControl = "/" + controlUrl;
                     }
 
-                    UpnpEndpoint ep = new UpnpEndpoint(epHost, epPort, normControl, st);
-                    if (fetchedScpdXml != null && !fetchedScpdXml.isEmpty()) {
-                        parseScpdActions(fetchedScpdXml, ep);
+                    final UpnpEndpoint ep = new UpnpEndpoint(epHost, epPort, normControl, st);
+
+                    // Pre-populate known Samsung NX RVF actions for instant 0ms handshake
+                    if (st.contains("ContentDirectory") || normControl.contains("smp_4_")) {
+                        ep.supportedActions.addAll(Arrays.asList("GetInfomation", "Shot", "MULTIAF", "AF", "ReleaseSelfTimer", "ZoomIN", "ZoomOUT", "SetResolution"));
+                        hasGetInfoOrShot = true;
+                    }
+
+                    // Optional background enrichment of SCPD actions without blocking handshake
+                    if (scpdUrl != null && !scpdUrl.isEmpty() && (st.contains("ContentDirectory") || st.contains("RemoteViewfinder"))) {
+                        final String fullScpd = resolveRelativeUrl(baseUrl, locationUrl, scpdUrl);
+                        if (isSafeCameraUrl(fullScpd)) {
+                            new Thread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        String scpdXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, fullScpd, getUserAgent(), 3000);
+                                        if (scpdXml != null && !scpdXml.isEmpty()) {
+                                            parseScpdActions(scpdXml, ep);
+                                        }
+                                    } catch (Exception ignored) {}
+                                }
+                            }, "NX-RVF-SCPD-Enrichment").start();
+                        }
                     }
 
                     if (hasGetInfoOrShot || st.contains("ContentDirectory")) {
@@ -1188,7 +1197,7 @@ public class ViewfinderClient {
                             sock.setTcpNoDelay(true);
                             sock.setKeepAlive(true);
                             sock.setReceiveBufferSize(256 * 1024);
-                            sock.setSoTimeout(10000);
+                            sock.setSoTimeout(25000);
                             sock.connect(new InetSocketAddress(host, port), 4000);
 
                             String hostHeader = (port == 80) ? host : (host + ":" + port);
@@ -2456,16 +2465,15 @@ public class ViewfinderClient {
     }
 
     /**
-     * Full, reliable capture sequence matching Samsung RVF (LiveShutter) & SmartCamera (RemoteViewFinder):
-     * 1. Stops live video stream first (matching LiveShutter stop_codec() / NDKRelease()),
-     *    instructing the camera DSP to halt its real-time video encoder and release
-     *    hardware RAM/buffers for full-resolution sensor readout, Bayer demosaicing, and JPEG capture.
-     * 2. Dispatches parameterless UPnP SOAP <u:Shot xmlns:u="..."/> action directly (or <REQUESTIMAGE>1</REQUESTIMAGE>
-     *    fallback), letting camera DSP execute native focus & exposure without double motor strain.
+     * Reliable hardware-safe capture sequence matching Samsung RVF (LiveShutter):
+     * 1. Keeps the live video stream socket CONNECTED (matching LiveShutter$37.run()).
+     *    Closing the live stream socket from the client sends TCP RST to VxWorks and freezes the camera DSP!
+     * 2. Dispatches parameterless UPnP SOAP <u:Shot xmlns:u="..."/> action directly,
+     *    letting camera DSP execute native focus & exposure, fire mechanical shutter, and write to SD card.
      * 3. Extracts <AFSHOTRESULT> and <AVAILSHOTS>.
      * 4. Downloads screen-nail JPEG (<AFSHOTRESULT>_SM) matching Samsung LiveShutter Thumbnaildown(),
      *    which completes the camera's capture cycle and saves the photo to DCIM/NX_MobileLink.
-     * 5. Automatically restarts the live video stream in finally (matching LiveShutter initcodec() / DISPLAY_STREAM).
+     * 5. Attempts to download full-resolution photo and registers image with Android MediaScanner.
      */
     public static void triggerShutter(final String cameraIp, final boolean autoFocusFirst, final ShutterCallback callback) {
         new Thread(new Runnable() {
@@ -2474,22 +2482,14 @@ public class ViewfinderClient {
                 commandLock.lock();
                 String savedPath = null;
                 try {
-                    final boolean wasStreaming = isStreaming.get() || lastFrameCallback != null;
-                    final FrameCallback savedFrameCallback = lastFrameCallback;
                     final String ip = (cameraIp != null && !cameraIp.isEmpty()) ? cameraIp :
                                       (activeCameraIp != null ? activeCameraIp : "192.168.107.1");
 
                     UpnpEndpoint ep = getPrimaryEndpoint(ip);
                     String serviceType = (ep != null && ep.serviceType != null) ? ep.serviceType : UPNP_SERVICE_CONTENT_DIR;
 
-                    // 1. MATCHING SAMSUNG LIVE SHUTTER (stop_codec):
-                    // Stop live stream BEFORE Shot so camera DSP frees video encoder buffers & CPU!
-                    Log.i(TAG, "triggerShutter: Stopping live stream before Shot capture...");
-                    stopLiveStream();
-                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-
                     if (autoFocusFirst) {
-                        Log.i(TAG, "triggerShutter: Executing optional pre-capture MULTIAF...");
+                        Log.i(TAG, "triggerShutter: Executing pre-capture MULTIAF...");
                         try {
                             String afResp = executeAutoFocusInternal(ep, serviceType);
                             if (afResp != null) {
@@ -2502,76 +2502,55 @@ public class ViewfinderClient {
                         }
                     }
 
-                    try {
-                        // 2. Build Shot SOAP arguments matching camera SCPD (parameterless vs <REQUESTIMAGE>1</REQUESTIMAGE>)
-                        List<String> shotInArgs = (ep != null) ? ep.actionInputArgs.get("Shot") : null;
-                        String[] shotArgVariants;
-                        if (shotInArgs != null && shotInArgs.contains("REQUESTIMAGE")) {
-                            shotArgVariants = new String[]{"<REQUESTIMAGE>1</REQUESTIMAGE>", null};
-                        } else if (shotInArgs != null && shotInArgs.contains("SHOTTING")) {
-                            shotArgVariants = new String[]{"<SHOTTING>1</SHOTTING>", null};
-                        } else {
-                            shotArgVariants = new String[]{null, "<REQUESTIMAGE>1</REQUESTIMAGE>"};
-                        }
+                    // On Samsung NX cameras, Shot is parameterless:
+                    // <u:Shot xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"></u:Shot>
+                    // Note: We DO NOT close the live stream socket! Samsung's official LiveShutter keeps
+                    // the stream connection open. Closing it from client sends TCP RST to VxWorks and freezes the camera!
+                    String shotBody = buildSoapEnvelope(serviceType, "Shot", null);
+                    String shotAction = "\"" + serviceType + "#Shot\"";
+                    String shotResponse = null;
 
-                        String shotAction = "\"" + serviceType + "#Shot\"";
-                        String shotResponse = null;
-
-                        for (String shotArgsXml : shotArgVariants) {
-                            String shotBody = buildSoapEnvelope(serviceType, "Shot", shotArgsXml);
-                            if (ep != null) {
-                                String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
-                                shotResponse = sendSoapRequest(url, shotAction, shotBody, 35000);
-                            }
-                            if (shotResponse == null) {
-                                for (UpnpEndpoint e : activeEndpoints) {
-                                    String url = "http://" + e.host + ":" + e.port + e.controlPath;
-                                    shotResponse = sendSoapRequest(url, shotAction, shotBody, 35000);
-                                    if (shotResponse != null) {
-                                        primaryEndpoint = e;
-                                        break;
-                                    }
-                                }
-                            }
+                    if (ep != null) {
+                        String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
+                        shotResponse = sendSoapRequest(url, shotAction, shotBody, 35000);
+                    }
+                    if (shotResponse == null) {
+                        for (UpnpEndpoint e : activeEndpoints) {
+                            String url = "http://" + e.host + ":" + e.port + e.controlPath;
+                            shotResponse = sendSoapRequest(url, shotAction, shotBody, 35000);
                             if (shotResponse != null) {
-                                String check = unescapeXml(shotResponse);
-                                if (!check.contains(":Fault>") && !check.contains("<Fault>")) {
-                                    break;
-                                }
-                                shotResponse = null;
+                                primaryEndpoint = e;
+                                break;
                             }
                         }
+                    }
+                    if (shotResponse == null) {
+                        String directUrl = "http://" + ip + ":7676/smp_4_";
+                        shotResponse = sendSoapRequest(directUrl, "\"" + UPNP_SERVICE_CONTENT_DIR + "#Shot\"", shotBody, 35000);
+                    }
 
-                        if (shotResponse != null) {
-                            String unescaped = unescapeXml(shotResponse);
-                            String fileUrl = extractXmlTag(unescaped, "AFSHOTRESULT");
-                            if (fileUrl == null || fileUrl.trim().isEmpty()) {
-                                fileUrl = extractXmlTag(unescaped, "AFATGPSRESULT");
-                            }
-                            if (fileUrl != null && !fileUrl.trim().isEmpty()) {
-                                lastCapturedFileUrl = fileUrl.trim();
-                                Log.i(TAG, "Shot returned FileURL=" + lastCapturedFileUrl);
-                                savedPath = downloadCapturedPhoto(lastCapturedFileUrl, appContext);
-                            }
-                            String avail = extractXmlTag(unescaped, "AVAILSHOTS");
-                            if (avail == null || avail.trim().isEmpty()) {
-                                avail = extractXmlTag(unescaped, "AVAILSHOTSRESULT");
-                            }
-                            if (avail != null && !avail.trim().isEmpty()) {
-                                availableShots = avail.trim();
-                            }
-                            if (callback != null) callback.onSuccess(savedPath);
-                        } else {
-                            releaseFocusInternal(ep, serviceType);
-                            if (callback != null) callback.onError("Camera did not respond to Shot command");
+                    if (shotResponse != null) {
+                        String unescaped = unescapeXml(shotResponse);
+                        String fileUrl = extractXmlTag(unescaped, "AFSHOTRESULT");
+                        if (fileUrl == null || fileUrl.trim().isEmpty()) {
+                            fileUrl = extractXmlTag(unescaped, "AFATGPSRESULT");
                         }
-                    } finally {
-                        // 3. MATCHING SAMSUNG LIVE SHUTTER (initcodec / start_codec):
-                        // Always restart live stream after capture and thumbnail download complete!
-                        if (wasStreaming && savedFrameCallback != null) {
-                            try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-                            startLiveStream(ip, savedFrameCallback);
+                        if (fileUrl != null && !fileUrl.trim().isEmpty()) {
+                            lastCapturedFileUrl = fileUrl.trim();
+                            Log.i(TAG, "Shot returned FileURL=" + lastCapturedFileUrl);
+                            savedPath = downloadCapturedPhoto(lastCapturedFileUrl, appContext);
                         }
+                        String avail = extractXmlTag(unescaped, "AVAILSHOTS");
+                        if (avail == null || avail.trim().isEmpty()) {
+                            avail = extractXmlTag(unescaped, "AVAILSHOTSRESULT");
+                        }
+                        if (avail != null && !avail.trim().isEmpty()) {
+                            availableShots = avail.trim();
+                        }
+                        if (callback != null) callback.onSuccess(savedPath);
+                    } else {
+                        releaseFocusInternal(ep, serviceType);
+                        if (callback != null) callback.onError("Camera did not respond to Shot command");
                     }
                 } finally {
                     commandLock.unlock();
@@ -2581,10 +2560,11 @@ public class ViewfinderClient {
     }
 
     /**
-     * Downloads the captured photo from the camera:
-     * 1. Always downloads <AFSHOTRESULT>_SM (screen-nail JPEG generated in RAM by NX1000 RVF firmware)
-     *    and saves it to DCIM/NX_MobileLink so the camera's HTTP server completes its RVF capture cycle quickly.
-     * 2. If the camera supports original URL download (or if _SM was unavailable), downloads the full image URL.
+     * Downloads the captured photo from the camera matching Samsung LiveShutter:
+     * 1. Fetches <AFSHOTRESULT>_SM (screen-nail JPEG in camera RAM) via HumbleHttpClient.download,
+     *    completing the camera's RVF capture cycle and saving the photo to DCIM/NX_MobileLink.
+     * 2. After a 400ms pause for the camera SD card write to finalize, attempts full-resolution download.
+     * 3. Registers the saved photo with Android MediaScanner so it appears immediately in the gallery.
      */
     private static String downloadCapturedPhoto(String fileUrl, Context context) {
         if (fileUrl == null || fileUrl.isEmpty() || !isSafeCameraUrl(fileUrl)) {
@@ -2594,31 +2574,51 @@ public class ViewfinderClient {
             File dcimDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "NX_MobileLink");
             if (!dcimDir.exists()) dcimDir.mkdirs();
 
-            String fileName = "NX_RVF_" + System.currentTimeMillis() + ".JPG";
-            File targetFile = new File(dcimDir, fileName);
+            String baseName = "NX_RVF_" + System.currentTimeMillis();
+            File targetFile = new File(dcimDir, baseName + ".JPG");
 
             String thumbUrl = fileUrl.endsWith("_SM") ? fileUrl : (fileUrl + "_SM");
             String fullUrl = fileUrl.endsWith("_SM") ? fileUrl.substring(0, fileUrl.length() - 3) : fileUrl;
 
-            // Step 1: Fetch _SM screen-nail image first (mandatory on NX1000 RVF and saves immediately)
-            boolean hasSavedFile = downloadSingleFile(thumbUrl, targetFile, 10000);
+            boolean hasSavedFile = false;
 
-            // Step 2: If camera supports original URL download (or if _SM failed), fetch full resolution image
-            if (supportsOriginalUrlDownload || !hasSavedFile) {
-                File fullTemp = new File(dcimDir, fileName + ".tmp");
-                if (downloadSingleFile(fullUrl, fullTemp, 12000) && fullTemp.exists() && fullTemp.length() > 0) {
-                    if (!hasSavedFile || fullTemp.length() >= targetFile.length()) {
-                        if (targetFile.exists()) targetFile.delete();
-                        if (fullTemp.renameTo(targetFile)) {
-                            hasSavedFile = true;
-                        }
+            // Step 1: Download _SM (screen-nail) first - always available instantly from NX1000 RAM
+            File thumbTemp = new File(dcimDir, baseName + "_thumb.tmp");
+            try (FileOutputStream fos = new FileOutputStream(thumbTemp)) {
+                HumbleHttpClient.download(activeWifiNetwork, thumbUrl, getUserAgent(), fos, null);
+            } catch (Exception e) {
+                Log.w(TAG, "Download _SM thumbnail notice: " + e.getMessage());
+            }
+
+            if (thumbTemp.exists() && thumbTemp.length() > 0) {
+                if (thumbTemp.renameTo(targetFile)) {
+                    hasSavedFile = true;
+                    Log.i(TAG, "Saved preview photo: " + targetFile.getAbsolutePath() + " (" + targetFile.length() + " bytes)");
+                }
+            }
+
+            // Step 2: Try to download full resolution photo after brief pause for camera SD card flush
+            File fullTemp = new File(dcimDir, baseName + "_full.tmp");
+            try {
+                Thread.sleep(400);
+                try (FileOutputStream fos = new FileOutputStream(fullTemp)) {
+                    HumbleHttpClient.download(activeWifiNetwork, fullUrl, getUserAgent(), fos, null);
+                }
+                if (fullTemp.exists() && fullTemp.length() > 100000) {
+                    if (targetFile.exists()) targetFile.delete();
+                    if (fullTemp.renameTo(targetFile)) {
+                        hasSavedFile = true;
+                        Log.i(TAG, "Saved full-res photo: " + targetFile.getAbsolutePath() + " (" + targetFile.length() + " bytes)");
                     }
                 }
+            } catch (Exception e) {
+                Log.w(TAG, "Full-res photo download notice: " + e.getMessage());
+            } finally {
                 if (fullTemp.exists()) fullTemp.delete();
+                if (thumbTemp.exists()) thumbTemp.delete();
             }
 
             if (hasSavedFile && targetFile.exists() && targetFile.length() > 0) {
-                Log.i(TAG, "Captured photo saved: " + targetFile.getAbsolutePath() + " (" + targetFile.length() + " bytes)");
                 if (context != null) {
                     try {
                         MediaScannerConnection.scanFile(
@@ -2632,63 +2632,9 @@ public class ViewfinderClient {
                 return targetFile.getAbsolutePath();
             }
         } catch (Exception e) {
-            Log.e(TAG, "Failed to download captured photo: " + e.getMessage(), e);
+            Log.e(TAG, "downloadCapturedPhoto error: " + e.getMessage(), e);
         }
         return null;
-    }
-
-    private static boolean downloadSingleFile(String downloadUrl, File destFile, int timeoutMs) {
-        if (downloadUrl == null || !isSafeCameraUrl(downloadUrl)) return false;
-        Socket sock = null;
-        try {
-            URL u = new URL(downloadUrl);
-            String host = u.getHost();
-            int port = u.getPort() != -1 ? u.getPort() : 80;
-            String path = u.getFile();
-            if (path == null || path.isEmpty()) path = "/";
-
-            sock = new Socket();
-            if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= 21) {
-                try { activeWifiNetwork.bindSocket(sock); } catch (Exception ignored) {}
-            }
-            sock.setSoTimeout(timeoutMs);
-            sock.connect(new InetSocketAddress(host, port), 4000);
-
-            String req = "GET " + path + " HTTP/1.0\r\n" +
-                         "User-Agent: " + getUserAgent() + "\r\n" +
-                         "HOST: " + host + ":" + port + "\r\n" +
-                         "Content-Length: 0\r\n\r\n";
-            OutputStream out = sock.getOutputStream();
-            out.write(req.getBytes(StandardCharsets.US_ASCII));
-            out.flush();
-
-            InputStream in = sock.getInputStream();
-            HttpStreamHeader hdr = readHttpStreamHeader(in);
-            if (hdr.statusCode >= 200 && hdr.statusCode < 300) {
-                if (destFile != null) {
-                    try (FileOutputStream fos = new FileOutputStream(destFile)) {
-                        byte[] buf = new byte[16384];
-                        int n;
-                        while ((n = in.read(buf)) != -1) {
-                            fos.write(buf, 0, n);
-                        }
-                        fos.flush();
-                    }
-                    return destFile.exists() && destFile.length() > 0;
-                } else {
-                    byte[] buf = new byte[8192];
-                    while (in.read(buf) != -1) {}
-                    return true;
-                }
-            }
-        } catch (Exception e) {
-            Log.d(TAG, "downloadSingleFile notice (" + downloadUrl + "): " + e.getMessage());
-        } finally {
-            if (sock != null) {
-                try { sock.close(); } catch (Exception ignored) {}
-            }
-        }
-        return false;
     }
 
     public static void zoomIn(final ActionCallback callback) {
@@ -2764,18 +2710,26 @@ public class ViewfinderClient {
     }
 
     private static String extractXmlTag(String xml, String tag) {
-        if (xml == null || tag == null) return null;
+        if (xml == null || tag == null || xml.isEmpty()) return null;
         String lowerXml = xml.toLowerCase(Locale.US);
-        String openTag = "<" + tag.toLowerCase(Locale.US) + ">";
-        String closeTag = "</" + tag.toLowerCase(Locale.US) + ">";
+        String targetTag = tag.toLowerCase(Locale.US);
+        String openTag = "<" + targetTag + ">";
+        String closeTag = "</" + targetTag + ">";
         int start = lowerXml.indexOf(openTag);
         if (start >= 0) {
             start += openTag.length();
             int end = lowerXml.indexOf(closeTag, start);
             if (end > start) {
-                return xml.substring(start, end);
+                return xml.substring(start, end).trim();
             }
         }
+        try {
+            Pattern p = Pattern.compile("<(?:[a-zA-Z0-9_-]+:)?" + Pattern.quote(tag) + "(?:\\s+[^>]*)?>([\\s\\S]*?)</(?:[a-zA-Z0-9_-]+:)?" + Pattern.quote(tag) + ">", Pattern.CASE_INSENSITIVE);
+            Matcher m = p.matcher(xml);
+            if (m.find()) {
+                return m.group(1).trim();
+            }
+        } catch (Exception ignored) {}
         return null;
     }
 
