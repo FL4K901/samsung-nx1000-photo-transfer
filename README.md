@@ -1,6 +1,6 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.6.5-blue.svg)](release/NX-MobileLink-v1.6.5.apk)
+[![Release](https://img.shields.io/badge/Release-v1.6.6-blue.svg)](release/NX-MobileLink-v1.6.6.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 [![Attribution](https://img.shields.io/badge/Legal-Attribution-orange.svg)](ATTRIBUTION.md)
@@ -67,7 +67,7 @@ This application underwent a comprehensive OWASP security review and incorporate
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.6.5.apk](release/NX-MobileLink-v1.6.5.apk)**  
+👉 **[Download NX-MobileLink-v1.6.6.apk](release/NX-MobileLink-v1.6.6.apk)**  
 *(Also available as [NX-MobileLink.apk](release/NX-MobileLink.apk))*
 
 1. Transfer or download the APK to your Android device.

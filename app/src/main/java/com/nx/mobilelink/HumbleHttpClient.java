@@ -283,6 +283,7 @@ public class HumbleHttpClient {
                 sb.append("User-Agent: ").append(userAgent).append("\r\n");
             }
             sb.append("HOST: ").append(host).append(":").append(port).append("\r\n");
+            sb.append("Connection: close\r\n");
             sb.append("Content-Length: ").append(bodyBytes.length).append("\r\n\r\n");
 
             client.os.write(sb.toString().getBytes(StandardCharsets.US_ASCII));

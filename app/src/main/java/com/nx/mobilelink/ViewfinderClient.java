@@ -360,15 +360,53 @@ public class ViewfinderClient {
                 }
                 activeCameraIp = candidateIps.get(0);
 
-                final int[] candidatePorts = new int[]{7676, 52235, 49152, 7678, 80};
+                // --- FAST-PATH: Instant Handshake with Primary Candidate IP (Wi-Fi Gateway) ---
+                // NX1000 Remote Viewfinder operates on port 7676 (/smp_2_ root XML and /smp_4_ ContentDirectory)
+                String primaryIp = candidateIps.get(0);
+                Log.i(TAG, "Fast-path: Initiating instant RVF handshake with " + primaryIp);
+
+                // Step 1: Direct GET /smp_2_ with exact SEC_RVF_<DEVICE_ID> User-Agent
+                // Signals camera firmware to transition out of the "Waiting for smartphone" screen
+                String primaryDescUrl = "http://" + primaryIp + ":7676/smp_2_";
+                String rootXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, primaryDescUrl, getUserAgent(), 1500);
+                if (rootXml != null && !rootXml.isEmpty()) {
+                    Log.i(TAG, "Fast-path: Root XML received from " + primaryIp);
+                    String localIp = getLocalWifiIp(appContext);
+                    parseDeviceDescriptionXml(rootXml, primaryDescUrl, primaryIp, 7676, localIp);
+                    resolved.set(true);
+                }
+
+                // Step 2: Direct GetInfomation SOAP Action (up to 3 rapid attempts, 150ms apart)
+                boolean fastInfoSuccess = false;
+                for (int attempt = 1; attempt <= 3; attempt++) {
+                    if (executeGetInformation(primaryIp)) {
+                        fastInfoSuccess = true;
+                        Log.i(TAG, "Fast-path: GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
+                        break;
+                    }
+                    try { Thread.sleep(150); } catch (InterruptedException ignored) { break; }
+                }
+
+                if (fastInfoSuccess) {
+                    if (activeStreamUrl == null || activeStreamUrl.isEmpty()) {
+                        activeStreamUrl = "http://" + primaryIp + ":7679/livestream.avi";
+                    }
+                    activeCameraIp = primaryIp;
+                    Log.i(TAG, "RVF Fast Handshake SUCCESS in <100ms! Camera IP: " + primaryIp);
+                    callback.onConnected(primaryIp);
+                    return;
+                }
+
+                // --- FALLBACK PATH: Multi-Port Probe & SSDP Discovery ---
+                final int[] candidatePorts = new int[]{7676, 7678, 52235, 49152, 80};
                 final long startTime = System.currentTimeMillis();
-                final long deadline = startTime + 10000;
+                final long deadline = startTime + 6000;
 
                 // 1. Multicast NOTIFY listener on port 1901 (Samsung MobileLink/RVF port)
                 Thread notify1901Thread = new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        listenSsdpMulticastNotify(SSDP_PORT_MOBILELINK, 8500, resolved, attemptedLocations);
+                        listenSsdpMulticastNotify(SSDP_PORT_MOBILELINK, 5000, resolved, attemptedLocations);
                     }
                 }, "NX-RVF-SSDP-Notify-1901");
                 notify1901Thread.start();
@@ -377,7 +415,7 @@ public class ViewfinderClient {
                 Thread notify1900Thread = new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        listenSsdpMulticastNotify(SSDP_PORT_STANDARD, 8500, resolved, attemptedLocations);
+                        listenSsdpMulticastNotify(SSDP_PORT_STANDARD, 5000, resolved, attemptedLocations);
                     }
                 }, "NX-RVF-SSDP-Notify-1900");
                 notify1900Thread.start();
@@ -386,21 +424,15 @@ public class ViewfinderClient {
                 Thread searchThread = new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        performSsdpSearchLoop(8500, candidateIps, resolved, attemptedLocations);
+                        performSsdpSearchLoop(5000, candidateIps, resolved, attemptedLocations);
                     }
                 }, "NX-RVF-SSDP-Search-8009");
                 searchThread.start();
 
-                // 4. Give SSDP priority (matching MobileLinkClient and official RVF app)
-                long ssdpPriorityEnd = startTime + 1500;
-                while (!resolved.get() && (System.currentTimeMillis() < ssdpPriorityEnd || handshakeInProgress.get())) {
-                    try { Thread.sleep(100); } catch (InterruptedException ignored) { break; }
-                }
-
-                // 5. Direct HTTP description fallback (without raw TCP port-scan connect/close that stalls VxWorks httpd)
+                // 4. Direct HTTP description fallback without artificial delays
                 while (!resolved.get() && System.currentTimeMillis() < deadline) {
                     if (handshakeInProgress.get()) {
-                        try { Thread.sleep(200); } catch (InterruptedException ignored) { break; }
+                        try { Thread.sleep(100); } catch (InterruptedException ignored) { break; }
                         continue;
                     }
                     for (String ip : candidateIps) {
@@ -413,23 +445,22 @@ public class ViewfinderClient {
                         }
                     }
                     if (resolved.get()) break;
-                    try { Thread.sleep(500); } catch (InterruptedException ignored) { break; }
+                    try { Thread.sleep(200); } catch (InterruptedException ignored) { break; }
                 }
 
                 notify1901Thread.interrupt();
                 notify1900Thread.interrupt();
                 searchThread.interrupt();
 
-                // 6. Always execute GetInfomation SOAP Action in a retry loop (up to 25 attempts, 250ms apart)
-                // Falls back to http://<cameraIp>:7676/smp_4_ if XML discovery didn't populate endpoints yet
+                // 5. Retry GetInfomation SOAP Action
                 boolean infoSuccess = false;
-                for (int attempt = 1; attempt <= 25; attempt++) {
+                for (int attempt = 1; attempt <= 10; attempt++) {
                     if (executeGetInformation(activeCameraIp)) {
                         infoSuccess = true;
-                        Log.i(TAG, "GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
+                        Log.i(TAG, "Fallback GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
                         break;
                     }
-                    try { Thread.sleep(250); } catch (InterruptedException ignored) { break; }
+                    try { Thread.sleep(200); } catch (InterruptedException ignored) { break; }
                 }
 
                 if (infoSuccess && activeStreamUrl != null && !activeStreamUrl.isEmpty()) {
@@ -797,25 +828,17 @@ public class ViewfinderClient {
 
                 String st = (serviceType != null && !serviceType.isEmpty()) ? serviceType : UPNP_SERVICE_CONTENT_DIR;
 
-                // Fetch SCPDURL for every service in <serviceList> (/smp_3_ ContentDirectory and /smp_7_ ConnectionManager),
+                // Fetch SCPDURL only for primary ContentDirectory service (/smp_3_),
                 // matching MobileLinkClient.java and LiveShutter.checkDevice in remote-viewfinder-2-2-11-multi-android.apk.
-                if (scpdUrl != null && !scpdUrl.isEmpty()) {
+                if (scpdUrl != null && !scpdUrl.isEmpty() && (st.contains("ContentDirectory") || st.contains("RemoteViewfinder"))) {
                     String fullScpd = resolveRelativeUrl(baseUrl, locationUrl, scpdUrl);
                     if (isSafeCameraUrl(fullScpd)) {
                         try {
-                            fetchedScpdXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, fullScpd, getUserAgent(), 4000);
+                            fetchedScpdXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, fullScpd, getUserAgent(), 2000);
                             if (fetchedScpdXml != null && (fetchedScpdXml.contains("GetInfomation") || fetchedScpdXml.contains("Shot") || fetchedScpdXml.contains("MULTIAF"))) {
                                 hasGetInfoOrShot = true;
                             }
                         } catch (Exception ignored) {}
-                    }
-                }
-
-                // Subscribe to UPnP Event Sub URL (/smp_5_ and /smp_8_) if provided
-                if (eventSubUrl != null && !eventSubUrl.isEmpty()) {
-                    String fullEventSub = resolveRelativeUrl(baseUrl, locationUrl, eventSubUrl);
-                    if (isSafeCameraUrl(fullEventSub)) {
-                        sendUpnpSubscribe(fullEventSub, localIp, 8059);
                     }
                 }
 
@@ -1898,8 +1921,8 @@ public class ViewfinderClient {
                     }
                 }
 
-                // 3. Drain newly decoded frames (non-blocking matching LORQUAD08 H264Player.smali dequeueOutputBuffer(info, 0))
-                boolean renderedAfter = drainOutputFrames(0);
+                // 3. Drain newly decoded frames
+                boolean renderedAfter = drainOutputFrames(2000);
                 return renderedBefore || renderedAfter;
             } catch (Exception e) {
                 Log.w(TAG, "MediaCodec decode step notice: " + e.getMessage());
@@ -2051,7 +2074,7 @@ public class ViewfinderClient {
                 } else if (outIdx >= 0) {
                     Bitmap frameBmp = null;
                     try {
-                        if (info.size > 0 && Build.VERSION.SDK_INT >= 21) {
+                        if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && Build.VERSION.SDK_INT >= 21) {
                             Image image = codec.getOutputImage(outIdx);
                             if (image != null) {
                                 try {
@@ -2108,26 +2131,25 @@ public class ViewfinderClient {
                 argbPixels = new int[totalPixels];
             }
 
+            yBuf.rewind();
             int yLimit = yBuf.remaining();
-            int uLimit = uBuf.remaining();
-            int vLimit = vBuf.remaining();
-
             if (yPlaneBytes == null || yPlaneBytes.length < yLimit) {
                 yPlaneBytes = new byte[yLimit];
             }
-            yBuf.position(0);
             yBuf.get(yPlaneBytes, 0, yLimit);
 
+            uBuf.rewind();
+            int uLimit = uBuf.remaining();
             if (uPlaneBytes == null || uPlaneBytes.length < uLimit) {
                 uPlaneBytes = new byte[uLimit];
             }
-            uBuf.position(0);
             uBuf.get(uPlaneBytes, 0, uLimit);
 
+            vBuf.rewind();
+            int vLimit = vBuf.remaining();
             if (vPlaneBytes == null || vPlaneBytes.length < vLimit) {
                 vPlaneBytes = new byte[vLimit];
             }
-            vBuf.position(0);
             vBuf.get(vPlaneBytes, 0, vLimit);
 
             int outOffset = 0;
@@ -2180,7 +2202,7 @@ public class ViewfinderClient {
             }
 
             buf.position(info.offset);
-            int bufLen = Math.min(info.size, buf.remaining());
+            int bufLen = info.size > 0 ? Math.min(info.size, buf.remaining()) : buf.remaining();
             if (rawYuvBytes == null || rawYuvBytes.length < bufLen) {
                 rawYuvBytes = new byte[bufLen];
             }
@@ -2715,42 +2737,6 @@ public class ViewfinderClient {
         }, "NX-RVF-Action-" + actionName).start();
     }
 
-    private static void sendUpnpSubscribe(String eventSubUrl, String localIp, int callbackPort) {
-        Socket sock = null;
-        try {
-            URL u = new URL(eventSubUrl);
-            String host = u.getHost();
-            int port = u.getPort() != -1 ? u.getPort() : 80;
-            String path = u.getFile();
-            if (path == null || path.isEmpty()) path = "/";
-
-            sock = new Socket();
-            if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= 21) {
-                try { activeWifiNetwork.bindSocket(sock); } catch (Exception ignored) {}
-            }
-            sock.setSoTimeout(2500);
-            sock.connect(new InetSocketAddress(host, port), 2000);
-
-            String req = "SUBSCRIBE " + path + " HTTP/1.0\r\n" +
-                         "User-Agent: " + getUserAgent() + "\r\n" +
-                         "HOST: " + host + ":" + port + "\r\n" +
-                         "CALLBACK: <http://" + localIp + ":" + callbackPort + "/evetSub>\r\n" +
-                         "NT: upnp:event\r\n" +
-                         "TIMEOUT: Second-infinite\r\n" +
-                         "Content-Length: 0\r\n\r\n";
-            OutputStream out = sock.getOutputStream();
-            out.write(req.getBytes(StandardCharsets.US_ASCII));
-            out.flush();
-            InputStream in = sock.getInputStream();
-            byte[] buf = new byte[512];
-            in.read(buf);
-        } catch (Exception ignored) {
-        } finally {
-            if (sock != null) {
-                try { sock.close(); } catch (Exception ignored) {}
-            }
-        }
-    }
 
     private static String sendSoapRequest(String urlString, String soapAction, String soapXml, int timeoutMs) {
         try {

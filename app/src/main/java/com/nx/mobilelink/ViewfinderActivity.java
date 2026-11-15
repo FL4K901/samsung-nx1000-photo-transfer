@@ -401,6 +401,9 @@ public class ViewfinderActivity extends Activity {
     }
 
     private void startStream(String cameraIp) {
+        if (txtInstructions != null) {
+            txtInstructions.setText("Connected! Receiving camera live stream...");
+        }
         ViewfinderClient.startLiveStream(cameraIp, new ViewfinderClient.FrameCallback() {
             @Override
             public void onFrame(final Bitmap frame) {

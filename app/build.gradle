@@ -10,8 +10,8 @@ android {
         applicationId "com.nx.mobilelink"
         minSdk 21
         targetSdk 34
-        versionCode 19
-        versionName "1.6.5"
+        versionCode 20
+        versionName "1.6.6"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
