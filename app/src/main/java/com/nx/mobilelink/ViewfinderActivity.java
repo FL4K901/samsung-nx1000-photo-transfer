@@ -164,13 +164,29 @@ public class ViewfinderActivity extends Activity {
             }
         });
 
-        // Tap on viewfinder viewport triggers autofocus
+        // Tap on viewfinder viewport triggers autofocus (or releases focus if already locked)
         imgPreview.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (connectedCameraIp == null) return;
 
                 mainHandler.removeCallbacks(focusReleaseRunnable);
+                if (isFocusLocked) {
+                    isFocusLocked = false;
+                    ViewfinderClient.releaseFocus(connectedCameraIp, new Runnable() {
+                        @Override
+                        public void run() {
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    updateStatusBanner();
+                                }
+                            });
+                        }
+                    });
+                    return;
+                }
+
                 txtStatusBadge.setText("🔍 Autofocusing...");
                 txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
                 txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
@@ -182,7 +198,7 @@ public class ViewfinderActivity extends Activity {
                             @Override
                             public void run() {
                                 isFocusLocked = true;
-                                txtStatusBadge.setText("🟢 Focus Locked");
+                                txtStatusBadge.setText("🟢 Focus Locked (Tap Shutter to shoot)");
                                 txtStatusBadge.setBackgroundResource(R.drawable.badge_connected);
                                 txtStatusBadge.setTextColor(getResources().getColor(R.color.status_green_text));
                                 Toast.makeText(ViewfinderActivity.this, "Focus locked", Toast.LENGTH_SHORT).show();
@@ -200,7 +216,6 @@ public class ViewfinderActivity extends Activity {
                             public void run() {
                                 isFocusLocked = false;
                                 txtStatusBadge.setText("🟡 Focus Hunt");
-                                ViewfinderClient.releaseFocus(connectedCameraIp);
                             }
                         });
                     }
@@ -389,19 +404,20 @@ public class ViewfinderActivity extends Activity {
             return;
         }
 
+        final boolean autoFocusFirst = !isFocusLocked;
         mainHandler.removeCallbacks(focusReleaseRunnable);
         isFocusLocked = false;
 
         btnShutter.setEnabled(false);
         btnShutter.setAlpha(0.5f);
-        txtStatusBadge.setText("🔍 Focusing & Capturing photo...");
+        txtStatusBadge.setText(autoFocusFirst ? "🔍 Focusing & Capturing photo..." : "📸 Capturing photo...");
         txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
         txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
-        Toast.makeText(this, "Focusing & Capturing photo...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, autoFocusFirst ? "Focusing & Capturing photo..." : "Capturing photo...", Toast.LENGTH_SHORT).show();
 
-        // Performs full, synchronized capture flow per protocol guide:
-        // MULTIAF -> Stop Live Stream -> Shot -> Resume Live Stream -> Download full image
-        ViewfinderClient.triggerShutter(connectedCameraIp, true, new ViewfinderClient.ShutterCallback() {
+        // Performs synchronized capture flow:
+        // (Optional MULTIAF if not already focus-locked) -> Shot -> Download _SM / image -> Resume Live Stream
+        ViewfinderClient.triggerShutter(connectedCameraIp, autoFocusFirst, new ViewfinderClient.ShutterCallback() {
             @Override
             public void onSuccess(final String savedFilePath) {
                 mainHandler.post(new Runnable() {

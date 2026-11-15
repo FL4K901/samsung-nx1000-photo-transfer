@@ -88,6 +88,11 @@ public class HumbleHttpClient {
      * The caller MUST call close() when finished reading the stream!
      */
     public InputStream request(Network network, String strUrl, String userAgent, int timeoutMs) throws Exception {
+        String accessMethod = (userAgent != null && userAgent.startsWith("SEC_RVF_")) ? "manual" : null;
+        return request(network, strUrl, userAgent, accessMethod, timeoutMs);
+    }
+
+    public InputStream request(Network network, String strUrl, String userAgent, String accessMethod, int timeoutMs) throws Exception {
         close();
 
         URL url = new URL(strUrl);
@@ -123,6 +128,9 @@ public class HumbleHttpClient {
         if (userAgent != null && !userAgent.isEmpty()) {
             sb.append("User-Agent: ").append(userAgent).append("\r\n");
         }
+        if (accessMethod != null && !accessMethod.isEmpty()) {
+            sb.append("Access-Method: ").append(accessMethod).append("\r\n");
+        }
         sb.append("HOST: ").append(host).append(":").append(port).append("\r\n");
         sb.append("Content-Length: 0\r\n\r\n");
 
@@ -142,19 +150,24 @@ public class HumbleHttpClient {
 
     /**
      * Fetches UPnP Device Description XML or Service SCPD XML using the exact
-     * dual-path strategy from org.cybergarage.xml.Parser.parse(URL, String userAgent)
-     * in mobilelink-1-7-13.apk and remote-viewfinder-2-2-11-multi-android.apk:
-     * 1. Raw socket HTTP/1.0 GET with User-Agent, HOST: <host>:<port>, Content-Length: 0
+     * dual-path strategy from org.cybergarage.xml.Parser.parse(URL, String userAgent, String accessMethod)
+     * in mobilelink-1-7-13.apk, remote-viewfinder-2-2-11-multi-android.apk, and Samsung SmartCamera:
+     * 1. Raw socket HTTP/1.0 GET with User-Agent, Access-Method (for RVF), HOST: <host>:<port>, Content-Length: 0
      * 2. Fallback HttpURLConnection GET with Content-Length: 0, HOST: <host>, User-Agent
      */
     public static String httpGetXml(Network network, String urlStr, String userAgent, int timeoutMs) {
+        String accessMethod = (userAgent != null && userAgent.startsWith("SEC_RVF_")) ? "manual" : null;
+        return httpGetXml(network, urlStr, userAgent, accessMethod, timeoutMs);
+    }
+
+    public static String httpGetXml(Network network, String urlStr, String userAgent, String accessMethod, int timeoutMs) {
         if (network == null) {
             network = NetworkManager.getActiveWifiNetwork();
         }
         // Path 1: CyberGarage raw HTTP/1.0 socket GET
         HumbleHttpClient client = new HumbleHttpClient();
         try {
-            InputStream in = client.request(network, urlStr, userAgent, timeoutMs);
+            InputStream in = client.request(network, urlStr, userAgent, accessMethod, timeoutMs);
             int expected = client.getContentLength();
             ByteArrayOutputStream baos = new ByteArrayOutputStream(expected > 0 ? expected : 4096);
             byte[] buf = new byte[4096];
@@ -194,6 +207,9 @@ public class HumbleHttpClient {
             urlCon.setRequestProperty("HOST", locationUrl.getHost());
             if (userAgent != null && !userAgent.isEmpty()) {
                 urlCon.setRequestProperty("User-Agent", userAgent);
+            }
+            if (accessMethod != null && !accessMethod.isEmpty()) {
+                urlCon.setRequestProperty("Access-Method", accessMethod);
             }
             urlCon.setRequestProperty("Connection", "close");
 
@@ -286,7 +302,10 @@ public class HumbleHttpClient {
                 }
             }
             String resp = baos.toString("UTF-8");
-            if (client.responseCode >= 200 && client.responseCode < 300 && resp != null && !resp.isEmpty()) {
+            if (client.responseCode >= 200 && client.responseCode < 300) {
+                return resp != null ? resp : "";
+            }
+            if (client.responseCode > 0 && resp != null && !resp.isEmpty()) {
                 return resp;
             }
         } catch (Exception e) {

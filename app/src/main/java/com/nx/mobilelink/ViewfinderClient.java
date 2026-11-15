@@ -144,6 +144,8 @@ public class ViewfinderClient {
         public final int port;
         public final String controlPath;
         public final String serviceType;
+        public final Set<String> supportedActions = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        public final java.util.Map<String, List<String>> actionInputArgs = new java.util.concurrent.ConcurrentHashMap<>();
 
         public UpnpEndpoint(String host, int port, String controlPath, String serviceType) {
             this.host = host;
@@ -159,12 +161,14 @@ public class ViewfinderClient {
     private static final AtomicBoolean isStreaming = new AtomicBoolean(false);
     private static Thread streamThread;
     private static volatile Socket activeStreamSocket;
+    private static volatile java.net.HttpURLConnection activeStreamConn;
     private static volatile FrameCallback lastFrameCallback;
 
     private static volatile Context appContext;
     private static volatile Network activeWifiNetwork;
     private static volatile String activeCameraIp;
     private static volatile String activeStreamUrl;
+    private static volatile boolean supportsOriginalUrlDownload = false;
     private static volatile UpnpEndpoint primaryEndpoint = null;
     private static volatile List<UpnpEndpoint> activeEndpoints = new java.util.concurrent.CopyOnWriteArrayList<>();
 
@@ -509,14 +513,13 @@ public class ViewfinderClient {
             }
             socket.setSoTimeout(500);
 
-            String ua = getUserAgent();
+            // Exact 5-line CyberGarage SSDPSearchRequest packet (no USER-AGENT header in UDP M-SEARCH)
             byte[] search1901All = (
                     "M-SEARCH * HTTP/1.1\r\n" +
                     "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_MOBILELINK + "\r\n" +
                     "MAN: \"ssdp:discover\"\r\n" +
                     "MX: 3\r\n" +
-                    "ST: ssdp:all\r\n" +
-                    "USER-AGENT: " + ua + "\r\n\r\n"
+                    "ST: ssdp:all\r\n\r\n"
             ).getBytes(StandardCharsets.UTF_8);
 
             byte[] search1901Root = (
@@ -524,8 +527,7 @@ public class ViewfinderClient {
                     "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_MOBILELINK + "\r\n" +
                     "MAN: \"ssdp:discover\"\r\n" +
                     "MX: 3\r\n" +
-                    "ST: upnp:rootdevice\r\n" +
-                    "USER-AGENT: " + ua + "\r\n\r\n"
+                    "ST: upnp:rootdevice\r\n\r\n"
             ).getBytes(StandardCharsets.UTF_8);
 
             byte[] search1900All = (
@@ -533,8 +535,7 @@ public class ViewfinderClient {
                     "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_STANDARD + "\r\n" +
                     "MAN: \"ssdp:discover\"\r\n" +
                     "MX: 3\r\n" +
-                    "ST: ssdp:all\r\n" +
-                    "USER-AGENT: " + ua + "\r\n\r\n"
+                    "ST: ssdp:all\r\n\r\n"
             ).getBytes(StandardCharsets.UTF_8);
 
             byte[] search1900Root = (
@@ -542,8 +543,7 @@ public class ViewfinderClient {
                     "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_STANDARD + "\r\n" +
                     "MAN: \"ssdp:discover\"\r\n" +
                     "MX: 3\r\n" +
-                    "ST: upnp:rootdevice\r\n" +
-                    "USER-AGENT: " + ua + "\r\n\r\n"
+                    "ST: upnp:rootdevice\r\n\r\n"
             ).getBytes(StandardCharsets.UTF_8);
 
             InetAddress multicastGroup = InetAddress.getByName(SSDP_ADDRESS);
@@ -794,22 +794,25 @@ public class ViewfinderClient {
                 String eventSubUrl = getChildElementText(serviceEl, "eventSubURL");
 
                 boolean hasGetInfoOrShot = false;
+                String fetchedScpdXml = null;
 
                 // Mandatory: Fetch SCPDURL so the camera's HTTP server sees that our control point inspected the service
                 if (scpdUrl != null && !scpdUrl.isEmpty()) {
                     String fullScpd = resolveRelativeUrl(baseUrl, locationUrl, scpdUrl);
                     if (isSafeCameraUrl(fullScpd)) {
                         try {
-                            String scpdXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, fullScpd, getUserAgent(), 3000);
-                            if (scpdXml != null && (scpdXml.contains("GetInfomation") || scpdXml.contains("Shot") || scpdXml.contains("MULTIAF"))) {
+                            fetchedScpdXml = HumbleHttpClient.httpGetXml(activeWifiNetwork, fullScpd, getUserAgent(), 3000);
+                            if (fetchedScpdXml != null && (fetchedScpdXml.contains("GetInfomation") || fetchedScpdXml.contains("Shot") || fetchedScpdXml.contains("MULTIAF"))) {
                                 hasGetInfoOrShot = true;
                             }
                         } catch (Exception ignored) {}
                     }
                 }
 
-                // Send UPnP SUBSCRIBE to eventSubURL (port 8059 listener)
-                if (eventSubUrl != null && !eventSubUrl.isEmpty()) {
+                String st = (serviceType != null && !serviceType.isEmpty()) ? serviceType : UPNP_SERVICE_CONTENT_DIR;
+
+                // Send UPnP SUBSCRIBE to ContentDirectory eventSubURL (port 8059 listener), matching UPNPController.deviceAdded
+                if (eventSubUrl != null && !eventSubUrl.isEmpty() && (hasGetInfoOrShot || st.contains("ContentDirectory"))) {
                     String fullEventSub = resolveRelativeUrl(baseUrl, locationUrl, eventSubUrl);
                     if (isSafeCameraUrl(fullEventSub)) {
                         try {
@@ -833,8 +836,10 @@ public class ViewfinderClient {
                         normControl = "/" + controlUrl;
                     }
 
-                    String st = (serviceType != null && !serviceType.isEmpty()) ? serviceType : UPNP_SERVICE_CONTENT_DIR;
                     UpnpEndpoint ep = new UpnpEndpoint(epHost, epPort, normControl, st);
+                    if (fetchedScpdXml != null && !fetchedScpdXml.isEmpty()) {
+                        parseScpdActions(fetchedScpdXml, ep);
+                    }
 
                     if (hasGetInfoOrShot || st.contains("ContentDirectory")) {
                         prioritized.add(ep);
@@ -855,6 +860,43 @@ public class ViewfinderClient {
             }
         } catch (Exception e) {
             Log.w(TAG, "DOM parseDeviceDescriptionXml notice: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Parses the camera's SCPD XML to record each action's exact <direction>in</direction> argument names,
+     * matching CyberGarage's Action.postControlAction() behavior across NX1000 (RVF 2.2) and SmartCamera 2.0/3.0.
+     */
+    private static void parseScpdActions(String scpdXml, UpnpEndpoint ep) {
+        try {
+            String clean = scpdXml.trim();
+            int firstBracket = clean.indexOf('<');
+            if (firstBracket > 0) clean = clean.substring(firstBracket);
+            DocumentBuilderFactory factory = createSecureDocumentBuilderFactory();
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            Document doc = builder.parse(new ByteArrayInputStream(clean.getBytes(StandardCharsets.UTF_8)));
+            NodeList actionNodes = doc.getElementsByTagName("action");
+            for (int i = 0; i < actionNodes.getLength(); i++) {
+                if (!(actionNodes.item(i) instanceof Element)) continue;
+                Element actionEl = (Element) actionNodes.item(i);
+                String actionName = getChildElementText(actionEl, "name");
+                if (actionName == null || actionName.isEmpty()) continue;
+                ep.supportedActions.add(actionName);
+                List<String> inArgs = new ArrayList<>();
+                NodeList argNodes = actionEl.getElementsByTagName("argument");
+                for (int j = 0; j < argNodes.getLength(); j++) {
+                    if (!(argNodes.item(j) instanceof Element)) continue;
+                    Element argEl = (Element) argNodes.item(j);
+                    String dir = getChildElementText(argEl, "direction");
+                    String argName = getChildElementText(argEl, "name");
+                    if (dir != null && "in".equalsIgnoreCase(dir.trim()) && argName != null && !argName.isEmpty()) {
+                        inArgs.add(argName.trim());
+                    }
+                }
+                ep.actionInputArgs.put(actionName, inArgs);
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "parseScpdActions notice: " + e.getMessage());
         }
     }
 
@@ -905,7 +947,8 @@ public class ViewfinderClient {
 
     /**
      * Executes the exact SOAP action "GetInfomation" (Samsung's spelling without 'r')
-     * on the discovered control endpoint.
+     * on the discovered control endpoint, respecting the camera's SCPD input arguments
+     * (parameterless on NX1000 RVF 2.2, or <GPSINFO></GPSINFO> on SmartCamera 2.0/3.0).
      */
     private static boolean executeGetInformation(String cameraIp) {
         commandLock.lock();
@@ -920,32 +963,43 @@ public class ViewfinderClient {
 
             for (UpnpEndpoint ep : snapshot) {
                 String serviceType = ep.serviceType != null ? ep.serviceType : UPNP_SERVICE_CONTENT_DIR;
-                String soapBody = buildSoapEnvelope(serviceType, "GetInfomation", null);
                 String soapAction = "\"" + serviceType + "#GetInfomation\"";
                 String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
 
-                String response = sendSoapRequest(url, soapAction, soapBody, 5000);
-                if (response != null && parseGetInformationResponse(response, ep.host, ep.port)) {
-                    primaryEndpoint = ep;
-                    return true;
+                List<String> inArgs = ep.actionInputArgs.get("GetInfomation");
+                boolean preferGpsInfo = (inArgs != null && inArgs.contains("GPSINFO"));
+                String[] argVariants = preferGpsInfo
+                        ? new String[]{"<GPSINFO></GPSINFO>", null}
+                        : new String[]{null, "<GPSINFO></GPSINFO>"};
+
+                for (String argsXml : argVariants) {
+                    String soapBody = buildSoapEnvelope(serviceType, "GetInfomation", argsXml);
+                    String response = sendSoapRequest(url, soapAction, soapBody, 5000);
+                    if (response != null && parseGetInformationResponse(response, ep.host, ep.port)) {
+                        primaryEndpoint = ep;
+                        return true;
+                    }
                 }
             }
 
             // Fallback probe if SSDP was delayed
             if (cameraIp != null && !cameraIp.isEmpty()) {
                 String serviceType = UPNP_SERVICE_CONTENT_DIR;
-                String soapBody = buildSoapEnvelope(serviceType, "GetInfomation", null);
                 String soapAction = "\"" + serviceType + "#GetInfomation\"";
+                String[] argVariants = new String[]{null, "<GPSINFO></GPSINFO>"};
                 for (int port : CANDIDATE_UPNP_PORTS) {
                     if (!isPortOpen(cameraIp, port, 250)) continue;
                     for (String path : CANDIDATE_CONTROL_PATHS) {
                         String url = "http://" + cameraIp + ":" + port + path;
-                        String response = sendSoapRequest(url, soapAction, soapBody, 1500);
-                        if (response != null && parseGetInformationResponse(response, cameraIp, port)) {
-                            UpnpEndpoint discovered = new UpnpEndpoint(cameraIp, port, path, serviceType);
-                            primaryEndpoint = discovered;
-                            activeEndpoints.add(0, discovered);
-                            return true;
+                        for (String argsXml : argVariants) {
+                            String soapBody = buildSoapEnvelope(serviceType, "GetInfomation", argsXml);
+                            String response = sendSoapRequest(url, soapAction, soapBody, 1500);
+                            if (response != null && parseGetInformationResponse(response, cameraIp, port)) {
+                                UpnpEndpoint discovered = new UpnpEndpoint(cameraIp, port, path, serviceType);
+                                primaryEndpoint = discovered;
+                                activeEndpoints.add(0, discovered);
+                                return true;
+                            }
                         }
                     }
                 }
@@ -960,17 +1014,28 @@ public class ViewfinderClient {
     private static boolean parseGetInformationResponse(String xml, String cameraIp, int cameraPort) {
         if (xml == null || xml.isEmpty()) return false;
         String unescaped = unescapeXml(xml);
+        if (unescaped.contains(":Fault>") || unescaped.contains("<Fault>")) {
+            return false;
+        }
 
         boolean matched = false;
         if (unescaped.contains("GetInfomationResponse") ||
             unescaped.contains("GETINFORMATIONRESULT") ||
             unescaped.contains("GETIPRESULT") ||
+            unescaped.contains("StreamUrl") ||
+            unescaped.contains("QualityLowUrl") ||
             unescaped.contains("Resolutions")) {
             matched = true;
         }
 
-        // Extract <GETIPRESULT> (the live stream URL, e.g. http://192.168.107.1:7678/stream.avi)
+        // Extract <GETIPRESULT> (NX1000 RVF 2.2) or <QualityLowUrl>/<QualityHighUrl> (SmartCamera 2.0/3.0)
         String streamUrl = extractXmlTag(unescaped, "GETIPRESULT");
+        if (streamUrl == null || streamUrl.trim().isEmpty()) {
+            streamUrl = extractXmlTag(unescaped, "QualityLowUrl");
+        }
+        if (streamUrl == null || streamUrl.trim().isEmpty()) {
+            streamUrl = extractXmlTag(unescaped, "QualityHighUrl");
+        }
         if (streamUrl != null && !streamUrl.isEmpty()) {
             String candidate = streamUrl.trim();
             if (!candidate.startsWith("http://") && !candidate.startsWith("https://")) {
@@ -982,9 +1047,16 @@ public class ViewfinderClient {
             }
             if (isSafeCameraUrl(candidate)) {
                 activeStreamUrl = candidate;
-                Log.i(TAG, "Parsed StreamURL from <GETIPRESULT>: " + activeStreamUrl);
+                Log.i(TAG, "Parsed StreamURL from GetInfomation: " + activeStreamUrl);
             }
             matched = true;
+        }
+
+        // Check <OriginalURL><Available>Y</Available></OriginalURL>
+        String origUrlBlock = extractXmlTag(unescaped, "OriginalURL");
+        if (origUrlBlock != null) {
+            String availOrig = extractXmlTag(origUrlBlock, "Available");
+            supportsOriginalUrlDownload = (availOrig != null && "Y".equalsIgnoreCase(availOrig.trim()));
         }
 
         // Extract <AVAILSHOTS>
@@ -1090,6 +1162,42 @@ public class ViewfinderClient {
                     for (String urlStr : streamUrls) {
                         if (!isStreaming.get()) break;
 
+                        // Path 1: HttpURLConnection with 256KB BufferedInputStream (exact match to LORQUAD08 H264Player.smali)
+                        java.net.HttpURLConnection conn = null;
+                        try {
+                            URL url = new URL(urlStr);
+                            if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= 21) {
+                                conn = (java.net.HttpURLConnection) activeWifiNetwork.openConnection(url);
+                            } else {
+                                conn = (java.net.HttpURLConnection) url.openConnection();
+                            }
+                            activeStreamConn = conn;
+                            conn.setConnectTimeout(4000);
+                            conn.setReadTimeout(4000);
+                            conn.setRequestProperty("User-Agent", "Lavf52.103.0");
+                            conn.connect();
+
+                            BufferedInputStream bufferedIn = new BufferedInputStream(conn.getInputStream(), 262144);
+                            int frames = decodeCameraStream(bufferedIn, urlStr, frameCallback);
+                            if (frames > 0) {
+                                gotAnyFrames = true;
+                                consecutiveErrors = 0;
+                                break;
+                            }
+                        } catch (Exception e) {
+                            if (isStreaming.get()) {
+                                Log.d(TAG, "HttpURLConnection stream notice on " + urlStr + ": " + e.getMessage());
+                            }
+                        } finally {
+                            activeStreamConn = null;
+                            if (conn != null) {
+                                try { conn.disconnect(); } catch (Exception ignored) {}
+                            }
+                        }
+
+                        if (!isStreaming.get() || gotAnyFrames) break;
+
+                        // Path 2: Raw Socket fallback (libffplay-jni.so Lavf52.103.0 HTTP GET)
                         Socket sock = null;
                         try {
                             URL url = new URL(urlStr);
@@ -1132,7 +1240,7 @@ public class ViewfinderClient {
                                 InputStream bodyIn = respHeader.isChunked
                                         ? new ChunkedInputStream(rawIn)
                                         : rawIn;
-                                BufferedInputStream bufferedIn = new BufferedInputStream(bodyIn, 65536);
+                                BufferedInputStream bufferedIn = new BufferedInputStream(bodyIn, 262144);
 
                                 int frames = decodeCameraStream(bufferedIn, urlStr, frameCallback);
                                 if (frames > 0) {
@@ -1143,7 +1251,7 @@ public class ViewfinderClient {
                             } else if (respHeader.statusCode == 0) {
                                 // Raw stream directly without HTTP status line
                                 InputStream combined = new SequencePrependInputStream(respHeader.rawHeaderBytes, rawIn);
-                                BufferedInputStream bufferedIn = new BufferedInputStream(combined, 65536);
+                                BufferedInputStream bufferedIn = new BufferedInputStream(combined, 262144);
                                 int frames = decodeCameraStream(bufferedIn, urlStr, frameCallback);
                                 if (frames > 0) {
                                     gotAnyFrames = true;
@@ -1192,6 +1300,11 @@ public class ViewfinderClient {
 
     public static void stopLiveStream() {
         isStreaming.set(false);
+        java.net.HttpURLConnection conn = activeStreamConn;
+        activeStreamConn = null;
+        if (conn != null) {
+            try { conn.disconnect(); } catch (Exception ignored) {}
+        }
         Socket sock = activeStreamSocket;
         activeStreamSocket = null;
         if (sock != null) {
@@ -1392,88 +1505,68 @@ public class ViewfinderClient {
         return decodeHybridOrMjpegStream(in, frameCallback);
     }
 
+    /**
+     * Demuxes the camera's AVI live stream using LORQUAD08's H264Player.smali 32-bit shift-register sliding window:
+     * 1. Scans byte-by-byte until 0x6d6f7669 ("movi").
+     * 2. Loops scanning byte-by-byte until 0x30306463 ("00dc") or 0x30306462 ("00db").
+     * 3. Reads 4-byte little-endian chunkSize (0 < chunkSize < 262144), reads the payload via readFully,
+     *    and feeds it directly into LiveVideoDecoder.
+     */
     private static int decodeAviStream(BufferedInputStream in, FrameCallback frameCallback) throws IOException {
         LiveVideoDecoder videoDecoder = new LiveVideoDecoder(frameCallback);
         int decodedFrames = 0;
 
         try {
-            byte[] riffHeader = new byte[12];
-            if (!readFully(in, riffHeader, 0, 12)) {
-                return 0;
-            }
-
-            String currentStreamType = "";
-            String videoFourCC = "H264";
-            int videoWidth = 640;
-            int videoHeight = 480;
-            byte[] headerBuf = new byte[8];
-
+            int window = 0;
+            int headerBytesScanned = 0;
+            // 1. Scan for "movi" (0x6d6f7669)
             while (isStreaming.get() && !Thread.currentThread().isInterrupted()) {
-                if (!readNextAviChunkHeader(in, headerBuf)) {
+                int b = in.read();
+                if (b < 0) return decodedFrames;
+                window = (window << 8) | (b & 0xFF);
+                headerBytesScanned++;
+                if (window == 0x6d6f7669) { // "movi"
                     break;
                 }
-
-                String fourCC = new String(headerBuf, 0, 4, StandardCharsets.US_ASCII);
-                int chunkSize = readInt32LE(headerBuf, 4);
-
-                if ("LIST".equals(fourCC) || "RIFF".equals(fourCC)) {
-                    byte[] listTypeBytes = new byte[4];
-                    if (!readFully(in, listTypeBytes, 0, 4)) break;
-                    continue;
+                if (headerBytesScanned > 512 * 1024) {
+                    return decodedFrames;
                 }
+            }
 
-                if (chunkSize < 0 || chunkSize > 4 * 1024 * 1024) {
-                    if (!resyncAviStream(in, headerBuf)) break;
-                    continue;
-                }
+            // Initialize MediaCodec immediately for video/avc 640x480 (LORQUAD08 initOffscreenCodec)
+            videoDecoder.configureFromHeader("H264", 640, 480, null);
+            videoDecoder.ensureInitialized();
 
-                if ("strh".equals(fourCC)) {
-                    byte[] strh = new byte[chunkSize];
-                    if (!readFully(in, strh, 0, chunkSize)) break;
-                    consumeAviPadIfPresent(in, chunkSize);
+            byte[] chunkBuf = new byte[262144];
+            window = 0;
 
-                    if (chunkSize >= 8) {
-                        currentStreamType = new String(strh, 0, 4, StandardCharsets.US_ASCII);
-                        String handler = new String(strh, 4, 4, StandardCharsets.US_ASCII).trim();
-                        if ("vids".equalsIgnoreCase(currentStreamType) && !handler.isEmpty()) {
-                            videoFourCC = handler;
-                            Log.i(TAG, "AVI strh video fccHandler=" + videoFourCC);
+            // 2. Scan for "00dc" (0x30306463) or "00db" (0x30306462)
+            while (isStreaming.get() && !Thread.currentThread().isInterrupted()) {
+                int b = in.read();
+                if (b < 0) break;
+                window = (window << 8) | (b & 0xFF);
+
+                if (window == 0x30306463 || window == 0x30306462) {
+                    int b0 = in.read();
+                    int b1 = in.read();
+                    int b2 = in.read();
+                    int b3 = in.read();
+                    if ((b0 | b1 | b2 | b3) < 0) break;
+
+                    int chunkSize = (b0 & 0xFF) |
+                                    ((b1 & 0xFF) << 8) |
+                                    ((b2 & 0xFF) << 16) |
+                                    ((b3 & 0xFF) << 24);
+
+                    if (chunkSize > 0 && chunkSize < 262144) {
+                        if (!readFully(in, chunkBuf, 0, chunkSize)) break;
+                        if (videoDecoder.decodePacket(chunkBuf, 0, chunkSize)) {
+                            decodedFrames++;
+                        } else if (decodedFrames == 0) {
+                            // Count initial SPS/PPS/IDR warm-up packets so stream loop knows stream is active
+                            decodedFrames = 1;
                         }
-                    }
-                } else if ("strf".equals(fourCC)) {
-                    byte[] strf = new byte[chunkSize];
-                    if (!readFully(in, strf, 0, chunkSize)) break;
-                    consumeAviPadIfPresent(in, chunkSize);
-
-                    if ("vids".equalsIgnoreCase(currentStreamType) && chunkSize >= 40) {
-                        int w = readInt32LE(strf, 4);
-                        int h = Math.abs(readInt32LE(strf, 8));
-                        String compression = new String(strf, 16, 4, StandardCharsets.US_ASCII).trim();
-                        if (w > 0 && w <= 4096) videoWidth = w;
-                        if (h > 0 && h <= 4096) videoHeight = h;
-                        if (!compression.isEmpty() && compression.charAt(0) != 0) {
-                            videoFourCC = compression;
-                        }
-                        byte[] extraData = null;
-                        if (chunkSize > 40) {
-                            extraData = Arrays.copyOfRange(strf, 40, chunkSize);
-                        }
-                        Log.i(TAG, "AVI strf video " + videoWidth + "x" + videoHeight + " compression=" + videoFourCC);
-                        videoDecoder.configureFromHeader(videoFourCC, videoWidth, videoHeight, extraData);
-                    }
-                } else if (isVideoChunkFourCC(fourCC)) {
-                    if (chunkSize == 0) continue;
-                    byte[] packet = new byte[chunkSize];
-                    if (!readFully(in, packet, 0, chunkSize)) break;
-                    consumeAviPadIfPresent(in, chunkSize);
-
-                    if (videoDecoder.decodePacket(packet, 0, chunkSize)) {
-                        decodedFrames++;
-                    }
-                } else {
-                    if (chunkSize > 0) {
-                        if (!skipFully(in, chunkSize)) break;
-                        consumeAviPadIfPresent(in, chunkSize);
+                        window = 0;
                     }
                 }
             }
@@ -1753,6 +1846,12 @@ public class ViewfinderClient {
             }
         }
 
+        void ensureInitialized() {
+            if (!configured) {
+                initMediaCodec();
+            }
+        }
+
         boolean decodePacket(byte[] data, int offset, int length) {
             if (data == null || length <= 4) return false;
 
@@ -1764,20 +1863,28 @@ public class ViewfinderClient {
                 }
             }
 
-            byte[] normalized = normalizePacketStartCodes(data, offset, length);
-            extractCsdFromBytes(normalized, 0, normalized.length);
-
             if (!configured) {
-                if ("video/avc".equals(mimeType) && csd0 == null) {
-                    return false;
-                }
                 if (!initMediaCodec()) {
                     return false;
                 }
             }
 
             try {
-                int inIdx = codec.dequeueInputBuffer(15000);
+                // 1. Drain any pending output frames before requesting an input buffer (LORQUAD08 H264Player.smali)
+                boolean renderedBefore = drainOutputFrames(0);
+
+                // 2. Retry dequeueInputBuffer(5000) up to 40 times, draining output buffers if busy
+                int inIdx = -1;
+                for (int retry = 0; retry < 40; retry++) {
+                    inIdx = codec.dequeueInputBuffer(5000);
+                    if (inIdx >= 0) {
+                        break;
+                    }
+                    if (drainOutputFrames(0)) {
+                        renderedBefore = true;
+                    }
+                }
+
                 if (inIdx >= 0) {
                     ByteBuffer inBuf;
                     if (Build.VERSION.SDK_INT >= 21) {
@@ -1787,14 +1894,16 @@ public class ViewfinderClient {
                     }
                     if (inBuf != null) {
                         inBuf.clear();
-                        int toPut = Math.min(normalized.length, inBuf.remaining());
-                        inBuf.put(normalized, 0, toPut);
+                        int toPut = Math.min(length, inBuf.remaining());
+                        inBuf.put(data, offset, toPut);
                         codec.queueInputBuffer(inIdx, 0, toPut, ptsUs, 0);
                         ptsUs += 33333; // ~30 fps
                     }
                 }
 
-                return drainOutputFrames();
+                // 3. Drain newly decoded frames (10000us wait on first poll, matching LORQUAD08 H264Player.smali)
+                boolean renderedAfter = drainOutputFrames(10000);
+                return renderedBefore || renderedAfter;
             } catch (Exception e) {
                 Log.w(TAG, "MediaCodec decode step notice: " + e.getMessage());
                 release();
@@ -1919,9 +2028,13 @@ public class ViewfinderClient {
         }
 
         private boolean drainOutputFrames() {
+            return drainOutputFrames(10000);
+        }
+
+        private boolean drainOutputFrames(long initialTimeoutUs) {
             boolean renderedAny = false;
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            long timeoutUs = 8000;
+            long timeoutUs = initialTimeoutUs;
 
             while (true) {
                 int outIdx = codec.dequeueOutputBuffer(info, timeoutUs);
@@ -1936,7 +2049,7 @@ public class ViewfinderClient {
                     if (newFormat.containsKey(MediaFormat.KEY_HEIGHT)) {
                         height = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
                     }
-                    timeoutUs = 8000;
+                    timeoutUs = initialTimeoutUs;
                     Log.i(TAG, "MediaCodec output format changed: " + newFormat);
                 } else if (outIdx >= 0) {
                     Bitmap frameBmp = null;
@@ -2159,8 +2272,74 @@ public class ViewfinderClient {
     }
 
     /**
-     * Executes the MULTIAF autofocus command with strict command serialization
+     * Evaluates AFSTATUS returned by MULTIAF / AF according to Samsung RVF & SmartCamera rules:
+     * - "AFEXTEND_OK" or "3" -> AF success
+     * - "AFEXTEND_FAIL" or "AFFAIL" or "0" -> AF failed
+     * - Comma-separated matrix (e.g. "0,0,1,0") -> AF success if any cell is "1" or "2" or "3"
+     */
+    private static boolean isAfSuccess(String afStatus) {
+        if (afStatus == null) return false;
+        String s = afStatus.trim();
+        if (s.isEmpty()) return false;
+        if (s.contains("AFFAIL") || s.contains("AFEXTEND_FAIL") || "0".equals(s)) {
+            return false;
+        }
+        if ("AFEXTEND_OK".equalsIgnoreCase(s) || "3".equals(s) || "1".equals(s)) {
+            return true;
+        }
+        if (s.contains(",")) {
+            String[] parts = s.split(",");
+            for (String p : parts) {
+                String cell = p.trim();
+                if (!cell.isEmpty() && !"0".equals(cell) && !cell.contains("FAIL")) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return !s.toUpperCase(Locale.US).contains("FAIL");
+    }
+
+    private static String executeAutoFocusInternal(UpnpEndpoint ep, String serviceType) {
+        String st = (serviceType != null && !serviceType.isEmpty()) ? serviceType : UPNP_SERVICE_CONTENT_DIR;
+        boolean preferSingleAf = (ep != null && !ep.supportedActions.isEmpty()
+                && !ep.supportedActions.contains("MULTIAF") && ep.supportedActions.contains("AF"));
+        String[] afActions = preferSingleAf ? new String[]{"AF", "MULTIAF"} : new String[]{"MULTIAF", "AF"};
+
+        for (String actName : afActions) {
+            String soapBody = buildSoapEnvelope(st, actName, null);
+            String soapAction = "\"" + st + "#" + actName + "\"";
+            String afResponse = null;
+
+            if (ep != null) {
+                String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
+                afResponse = sendSoapRequest(url, soapAction, soapBody, 30000);
+            }
+            if (afResponse == null) {
+                for (UpnpEndpoint e : activeEndpoints) {
+                    String url = "http://" + e.host + ":" + e.port + e.controlPath;
+                    afResponse = sendSoapRequest(url, soapAction, soapBody, 30000);
+                    if (afResponse != null) {
+                        primaryEndpoint = e;
+                        break;
+                    }
+                }
+            }
+            if (afResponse != null) {
+                String unescaped = unescapeXml(afResponse);
+                if (unescaped.contains(":Fault>") || unescaped.contains("<Fault>")) {
+                    continue;
+                }
+                return afResponse;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Executes the MULTIAF / AF autofocus command with strict command serialization
      * and extended 30-second timeout to allow physical motor movement.
+     * Automatically dispatches ReleaseSelfTimer(0) if autofocus fails so the camera never hangs.
      */
     public static void triggerAutoFocus(final String cameraIp, final AutoFocusCallback callback) {
         new Thread(new Runnable() {
@@ -2173,37 +2352,21 @@ public class ViewfinderClient {
 
                     UpnpEndpoint ep = getPrimaryEndpoint(ip);
                     String serviceType = (ep != null && ep.serviceType != null) ? ep.serviceType : UPNP_SERVICE_CONTENT_DIR;
-                    String soapBody = buildSoapEnvelope(serviceType, "MULTIAF", null);
-                    String soapAction = "\"" + serviceType + "#MULTIAF\"";
 
-                    String afResponse = null;
-                    if (ep != null) {
-                        String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
-                        afResponse = sendSoapRequest(url, soapAction, soapBody, 30000);
-                    }
-
-                    if (afResponse == null) {
-                        for (UpnpEndpoint e : activeEndpoints) {
-                            String url = "http://" + e.host + ":" + e.port + e.controlPath;
-                            afResponse = sendSoapRequest(url, soapAction, soapBody, 30000);
-                            if (afResponse != null) {
-                                primaryEndpoint = e;
-                                break;
-                            }
-                        }
-                    }
-
+                    String afResponse = executeAutoFocusInternal(ep, serviceType);
                     if (afResponse != null) {
                         String unescaped = unescapeXml(afResponse);
                         String afStatus = extractXmlTag(unescaped, "AFSTATUS");
-                        Log.i(TAG, "MULTIAF completed. AFSTATUS=" + afStatus);
-                        if (afStatus != null && !afStatus.contains("AFFAIL")) {
+                        Log.i(TAG, "Autofocus completed. AFSTATUS=" + afStatus);
+                        if (isAfSuccess(afStatus)) {
                             if (callback != null) callback.onAutoFocusSuccess(afStatus);
                         } else {
+                            releaseFocusInternal(ep, serviceType);
                             if (callback != null) callback.onAutoFocusFailed("AFSTATUS=" + afStatus);
                         }
                     } else {
-                        Log.w(TAG, "Camera did not respond to MULTIAF");
+                        Log.w(TAG, "Camera did not respond to MULTIAF/AF");
+                        releaseFocusInternal(ep, serviceType);
                         if (callback != null) {
                             callback.onAutoFocusFailed("Camera did not respond to autofocus command");
                         }
@@ -2265,13 +2428,14 @@ public class ViewfinderClient {
     }
 
     /**
-     * Full, reliable capture sequence from Samsung Camera Remote Protocol Guide:
-     * 1. Autofocus via MULTIAF (with 30s timeout). On failure: releases focus and aborts cleanly.
-     * 2. Pauses live video stream socket and waits 350ms for camera DSP to unbind video encoder.
-     * 3. Dispatches parameterless Shot action with 35s timeout.
-     * 4. In finally block, automatically resumes live video streaming.
-     * 5. Downloads captured thumbnail and FULL-resolution photo to DCIM/NX_MobileLink,
-     *    and registers it with Android MediaScanner.
+     * Full, reliable capture sequence matching Samsung RVF (LiveShutter) & SmartCamera (RemoteViewFinder):
+     * 1. If autoFocusFirst is true (not already focus-locked), runs MULTIAF/AF with 30s timeout.
+     *    On AF failure: calls ReleaseSelfTimer(0) and aborts cleanly while keeping live stream running.
+     * 2. Dispatches Shot action using the camera's SCPD input arguments (parameterless on NX1000 RVF 2.2,
+     *    or <REQUESTIMAGE>1</REQUESTIMAGE> on SmartCamera 2.0/3.0, with automatic fallback).
+     * 3. Stops the old live stream connection once the camera captures the image, downloads the
+     *    screen-nail (<AFSHOTRESULT>_SM) and/or full-res photo to DCIM/NX_MobileLink,
+     *    registers with MediaScanner, and automatically restarts the live stream in finally!
      */
     public static void triggerShutter(final String cameraIp, final boolean autoFocusFirst, final ShutterCallback callback) {
         new Thread(new Runnable() {
@@ -2280,7 +2444,7 @@ public class ViewfinderClient {
                 commandLock.lock();
                 String savedPath = null;
                 try {
-                    final boolean wasStreaming = isStreaming.get();
+                    final boolean wasStreaming = isStreaming.get() || lastFrameCallback != null;
                     final FrameCallback savedFrameCallback = lastFrameCallback;
                     final String ip = (cameraIp != null && !cameraIp.isEmpty()) ? cameraIp :
                                       (activeCameraIp != null ? activeCameraIp : "192.168.107.1");
@@ -2288,56 +2452,65 @@ public class ViewfinderClient {
                     UpnpEndpoint ep = getPrimaryEndpoint(ip);
                     String serviceType = (ep != null && ep.serviceType != null) ? ep.serviceType : UPNP_SERVICE_CONTENT_DIR;
 
-                    // 1. Autofocus first if requested
+                    // 1. Autofocus first if requested (skipped if user already locked focus via Focus button / tap)
                     if (autoFocusFirst) {
                         Log.i(TAG, "triggerShutter: Executing pre-capture MULTIAF...");
-                        String afBody = buildSoapEnvelope(serviceType, "MULTIAF", null);
-                        String afAction = "\"" + serviceType + "#MULTIAF\"";
-                        String afResp = null;
-                        if (ep != null) {
-                            String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
-                            afResp = sendSoapRequest(url, afAction, afBody, 30000);
-                        }
+                        String afResp = executeAutoFocusInternal(ep, serviceType);
                         if (afResp != null) {
                             String unescaped = unescapeXml(afResp);
                             String afStatus = extractXmlTag(unescaped, "AFSTATUS");
                             Log.i(TAG, "Pre-capture MULTIAF completed. AFSTATUS=" + afStatus);
-                            if (afStatus != null && afStatus.contains("AFFAIL")) {
+                            if (!isAfSuccess(afStatus)) {
                                 Log.w(TAG, "Pre-capture autofocus failed; releasing focus");
                                 releaseFocusInternal(ep, serviceType);
-                                if (callback != null) callback.onError("Autofocus failed (AFFAIL)");
+                                if (callback != null) callback.onError("Autofocus failed (AFSTATUS=" + afStatus + ")");
                                 return;
                             }
                         }
                     }
 
-                    // 2. Pause live stream before Shot (Rule 3 in protocol guide)
-                    // The camera hardware requires full sensor & DSP resources for still capture.
-                    if (wasStreaming) {
-                        stopLiveStream();
-                        try { Thread.sleep(350); } catch (InterruptedException ignored) {}
-                    }
-
                     try {
-                        // 3. Send Shot action
-                        String shotBody = buildSoapEnvelope(serviceType, "Shot", null);
+                        // 2. Build Shot SOAP arguments matching camera SCPD (parameterless vs <REQUESTIMAGE>1</REQUESTIMAGE>)
+                        List<String> shotInArgs = (ep != null) ? ep.actionInputArgs.get("Shot") : null;
+                        String[] shotArgVariants;
+                        if (shotInArgs != null && shotInArgs.contains("REQUESTIMAGE")) {
+                            shotArgVariants = new String[]{"<REQUESTIMAGE>1</REQUESTIMAGE>", null};
+                        } else if (shotInArgs != null && shotInArgs.contains("SHOTTING")) {
+                            shotArgVariants = new String[]{"<SHOTTING>1</SHOTTING>", null};
+                        } else {
+                            shotArgVariants = new String[]{null, "<REQUESTIMAGE>1</REQUESTIMAGE>"};
+                        }
+
                         String shotAction = "\"" + serviceType + "#Shot\"";
                         String shotResponse = null;
 
-                        if (ep != null) {
-                            String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
-                            shotResponse = sendSoapRequest(url, shotAction, shotBody, 35000);
-                        }
-                        if (shotResponse == null) {
-                            for (UpnpEndpoint e : activeEndpoints) {
-                                String url = "http://" + e.host + ":" + e.port + e.controlPath;
+                        for (String shotArgsXml : shotArgVariants) {
+                            String shotBody = buildSoapEnvelope(serviceType, "Shot", shotArgsXml);
+                            if (ep != null) {
+                                String url = "http://" + ep.host + ":" + ep.port + ep.controlPath;
                                 shotResponse = sendSoapRequest(url, shotAction, shotBody, 35000);
-                                if (shotResponse != null) {
-                                    primaryEndpoint = e;
-                                    break;
+                            }
+                            if (shotResponse == null) {
+                                for (UpnpEndpoint e : activeEndpoints) {
+                                    String url = "http://" + e.host + ":" + e.port + e.controlPath;
+                                    shotResponse = sendSoapRequest(url, shotAction, shotBody, 35000);
+                                    if (shotResponse != null) {
+                                        primaryEndpoint = e;
+                                        break;
+                                    }
                                 }
                             }
+                            if (shotResponse != null) {
+                                String check = unescapeXml(shotResponse);
+                                if (!check.contains(":Fault>") && !check.contains("<Fault>")) {
+                                    break;
+                                }
+                                shotResponse = null;
+                            }
                         }
+
+                        // Stop old live stream reader now that Shot has been processed by the camera
+                        stopLiveStream();
 
                         if (shotResponse != null) {
                             String unescaped = unescapeXml(shotResponse);
@@ -2359,12 +2532,13 @@ public class ViewfinderClient {
                             }
                             if (callback != null) callback.onSuccess(savedPath);
                         } else {
+                            releaseFocusInternal(ep, serviceType);
                             if (callback != null) callback.onError("Camera did not respond to Shot command");
                         }
                     } finally {
-                        // 4. Restart live stream automatically after Shot completes
+                        // 3. Always restart live stream after Shot & download complete (matching StartCodecTask / DISPLAY_STREAM)
                         if (wasStreaming && savedFrameCallback != null) {
-                            try { Thread.sleep(350); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(250); } catch (InterruptedException ignored) {}
                             startLiveStream(ip, savedFrameCallback);
                         }
                     }
@@ -2376,33 +2550,44 @@ public class ViewfinderClient {
     }
 
     /**
-     * Downloads both thumbnail and the FULL-resolution photo from the camera,
-     * saving it to DCIM/NX_MobileLink and notifying MediaScanner.
+     * Downloads the captured photo from the camera:
+     * 1. Always downloads <AFSHOTRESULT>_SM (screen-nail JPEG generated in RAM by NX1000 RVF firmware)
+     *    and saves it to DCIM/NX_MobileLink so the camera's HTTP server completes its RVF capture cycle quickly.
+     * 2. If the camera supports original URL download (or if _SM was unavailable), downloads the full image URL.
      */
     private static String downloadCapturedPhoto(String fileUrl, Context context) {
         if (fileUrl == null || fileUrl.isEmpty() || !isSafeCameraUrl(fileUrl)) {
             return null;
         }
         try {
-            // First fetch thumbnail if available
-            String thumbUrl = fileUrl.endsWith("_SM") ? fileUrl : (fileUrl + "_SM");
-            downloadSingleFile(thumbUrl, null);
-
-            // Fetch full resolution image
-            String fullUrl = fileUrl.endsWith("_SM") ? fileUrl.substring(0, fileUrl.length() - 3) : fileUrl;
             File dcimDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "NX_MobileLink");
             if (!dcimDir.exists()) dcimDir.mkdirs();
 
             String fileName = "NX_RVF_" + System.currentTimeMillis() + ".JPG";
             File targetFile = new File(dcimDir, fileName);
 
-            boolean downloaded = downloadSingleFile(fullUrl, targetFile);
-            if (!downloaded && !fullUrl.equals(fileUrl)) {
-                downloaded = downloadSingleFile(fileUrl, targetFile);
+            String thumbUrl = fileUrl.endsWith("_SM") ? fileUrl : (fileUrl + "_SM");
+            String fullUrl = fileUrl.endsWith("_SM") ? fileUrl.substring(0, fileUrl.length() - 3) : fileUrl;
+
+            // Step 1: Fetch _SM screen-nail image first (mandatory on NX1000 RVF and saves immediately)
+            boolean hasSavedFile = downloadSingleFile(thumbUrl, targetFile, 10000);
+
+            // Step 2: If camera supports original URL download (or if _SM failed), fetch full resolution image
+            if (supportsOriginalUrlDownload || !hasSavedFile) {
+                File fullTemp = new File(dcimDir, fileName + ".tmp");
+                if (downloadSingleFile(fullUrl, fullTemp, 12000) && fullTemp.exists() && fullTemp.length() > 0) {
+                    if (!hasSavedFile || fullTemp.length() >= targetFile.length()) {
+                        if (targetFile.exists()) targetFile.delete();
+                        if (fullTemp.renameTo(targetFile)) {
+                            hasSavedFile = true;
+                        }
+                    }
+                }
+                if (fullTemp.exists()) fullTemp.delete();
             }
 
-            if (downloaded && targetFile.exists() && targetFile.length() > 0) {
-                Log.i(TAG, "Full photo downloaded successfully: " + targetFile.getAbsolutePath() + " (" + targetFile.length() + " bytes)");
+            if (hasSavedFile && targetFile.exists() && targetFile.length() > 0) {
+                Log.i(TAG, "Captured photo saved: " + targetFile.getAbsolutePath() + " (" + targetFile.length() + " bytes)");
                 if (context != null) {
                     try {
                         MediaScannerConnection.scanFile(
@@ -2421,7 +2606,7 @@ public class ViewfinderClient {
         return null;
     }
 
-    private static boolean downloadSingleFile(String downloadUrl, File destFile) {
+    private static boolean downloadSingleFile(String downloadUrl, File destFile, int timeoutMs) {
         if (downloadUrl == null || !isSafeCameraUrl(downloadUrl)) return false;
         Socket sock = null;
         try {
@@ -2435,13 +2620,13 @@ public class ViewfinderClient {
             if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= 21) {
                 try { activeWifiNetwork.bindSocket(sock); } catch (Exception ignored) {}
             }
-            sock.setSoTimeout(30000);
-            sock.connect(new InetSocketAddress(host, port), 5000);
+            sock.setSoTimeout(timeoutMs);
+            sock.connect(new InetSocketAddress(host, port), 4000);
 
             String req = "GET " + path + " HTTP/1.0\r\n" +
-                         "Host: " + host + ":" + port + "\r\n" +
                          "User-Agent: " + getUserAgent() + "\r\n" +
-                         "Connection: close\r\n\r\n";
+                         "HOST: " + host + ":" + port + "\r\n" +
+                         "Content-Length: 0\r\n\r\n";
             OutputStream out = sock.getOutputStream();
             out.write(req.getBytes(StandardCharsets.US_ASCII));
             out.flush();
@@ -2458,11 +2643,12 @@ public class ViewfinderClient {
                         }
                         fos.flush();
                     }
+                    return destFile.exists() && destFile.length() > 0;
                 } else {
                     byte[] buf = new byte[8192];
                     while (in.read(buf) != -1) {}
+                    return true;
                 }
-                return true;
             }
         } catch (Exception e) {
             Log.d(TAG, "downloadSingleFile notice (" + downloadUrl + "): " + e.getMessage());
@@ -2541,7 +2727,7 @@ public class ViewfinderClient {
                          "HOST: " + host + ":" + port + "\r\n" +
                          "CALLBACK: <http://" + localIp + ":" + callbackPort + "/evetSub>\r\n" +
                          "NT: upnp:event\r\n" +
-                         "TIMEOUT: Second-180\r\n" +
+                         "TIMEOUT: Second-infinite\r\n" +
                          "Content-Length: 0\r\n\r\n";
             OutputStream out = sock.getOutputStream();
             out.write(req.getBytes(StandardCharsets.US_ASCII));

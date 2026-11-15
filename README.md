@@ -1,6 +1,6 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.5.3-blue.svg)](release/NX-MobileLink-v1.5.3.apk)
+[![Release](https://img.shields.io/badge/Release-v1.6.0-blue.svg)](release/NX-MobileLink-v1.6.0.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 [![Attribution](https://img.shields.io/badge/Legal-Attribution-orange.svg)](ATTRIBUTION.md)
@@ -66,7 +66,7 @@ This application underwent a comprehensive OWASP security review and incorporate
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.5.3.apk](release/NX-MobileLink-v1.5.3.apk)**  
+👉 **[Download NX-MobileLink-v1.6.0.apk](release/NX-MobileLink-v1.6.0.apk)**  
 *(Also available as [NX-MobileLink.apk](release/NX-MobileLink.apk))*
 
 1. Transfer or download the APK to your Android device.
@@ -105,7 +105,7 @@ Requires Android SDK build-tools 34+ and JDK 17+:
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_apk.ps1
 ```
-The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.5.3.apk`.
+The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 signature schemes in `release/NX-MobileLink-v1.6.0.apk`.
 
 ### Method B: Android Studio
 1. Open Android Studio.
@@ -116,6 +116,11 @@ The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.6.0
+* **64-bit H.264 Live Viewfinder Engine (`H264Player` Architecture)**: Integrated the 32-bit shift-register sliding-window AVI demuxer (`movi` / `00dc` / `00db`) and direct `MediaCodec` (`video/avc` 640x480 `COLOR_FormatYUV420Flexible`) initialization from `LORQUAD08/Samsung-SmartCamera-64bit-NX-Mod`, eliminating `csd-0` deadlocks and dropped H.264 frames via pre-input output buffer draining and 40x input buffer retry loops.
+* **Authentic CyberGarage RVF Handshake & SCPD Inspection**: Removed non-standard `USER-AGENT` from UDP `M-SEARCH` packets, added `Access-Method: manual` header on UPnP XML fetches, subscribed to `ContentDirectory` with `TIMEOUT: Second-infinite`, and implemented dynamic SCPD `<direction>in</direction>` argument inspection (`GetInfomation` and `Shot`) across NX1000 (`RVF 2.2`) and SmartCamera 2.0/3.0 firmwares.
+* **Non-Freezing Shutter (`Shot`) & Autofocus (`MULTIAF` / `AF`)**: Prevented double-SOAP POST retries in `HumbleHttpClient`, avoided redundant `MULTIAF` when focus is already locked, added automatic `ReleaseSelfTimer(0)` recovery on AF failure, and restored immediate `<AFSHOTRESULT>_SM` screen-nail downloading followed by automatic live stream restart.
 
 ### Version 1.5.3
 * **Complete Remote Viewfinder Protocol Specification Overhaul**:
