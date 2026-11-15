@@ -1530,6 +1530,7 @@ public class ViewfinderClient {
                 window = (window << 8) | (b & 0xFF);
 
                 if (window == 0x30306463 || window == 0x30306462) {
+                    window = 0;
                     int b0 = in.read();
                     int b1 = in.read();
                     int b2 = in.read();
@@ -1549,7 +1550,6 @@ public class ViewfinderClient {
                             // Count initial SPS/PPS/IDR warm-up packets so stream loop knows stream is active
                             decodedFrames = 1;
                         }
-                        window = 0;
                     }
                 }
             }
@@ -1805,6 +1805,10 @@ public class ViewfinderClient {
         private int[] argbPixels;
         private final Bitmap[] bitmapPool = new Bitmap[2];
         private int poolIndex = 0;
+        private byte[] yPlaneBytes;
+        private byte[] uPlaneBytes;
+        private byte[] vPlaneBytes;
+        private byte[] rawYuvBytes;
 
         LiveVideoDecoder(FrameCallback frameCallback) {
             this.frameCallback = frameCallback;
@@ -1884,8 +1888,8 @@ public class ViewfinderClient {
                     }
                 }
 
-                // 3. Drain newly decoded frames (10000us wait on first poll, matching LORQUAD08 H264Player.smali)
-                boolean renderedAfter = drainOutputFrames(10000);
+                // 3. Drain newly decoded frames (non-blocking matching LORQUAD08 H264Player.smali dequeueOutputBuffer(info, 0))
+                boolean renderedAfter = drainOutputFrames(0);
                 return renderedBefore || renderedAfter;
             } catch (Exception e) {
                 Log.w(TAG, "MediaCodec decode step notice: " + e.getMessage());
@@ -2011,7 +2015,7 @@ public class ViewfinderClient {
         }
 
         private boolean drainOutputFrames() {
-            return drainOutputFrames(10000);
+            return drainOutputFrames(0);
         }
 
         private boolean drainOutputFrames(long initialTimeoutUs) {
@@ -2094,9 +2098,27 @@ public class ViewfinderClient {
                 argbPixels = new int[totalPixels];
             }
 
-            int yLimit = yBuf.limit();
-            int uLimit = uBuf.limit();
-            int vLimit = vBuf.limit();
+            int yLimit = yBuf.remaining();
+            int uLimit = uBuf.remaining();
+            int vLimit = vBuf.remaining();
+
+            if (yPlaneBytes == null || yPlaneBytes.length < yLimit) {
+                yPlaneBytes = new byte[yLimit];
+            }
+            yBuf.position(0);
+            yBuf.get(yPlaneBytes, 0, yLimit);
+
+            if (uPlaneBytes == null || uPlaneBytes.length < uLimit) {
+                uPlaneBytes = new byte[uLimit];
+            }
+            uBuf.position(0);
+            uBuf.get(uPlaneBytes, 0, uLimit);
+
+            if (vPlaneBytes == null || vPlaneBytes.length < vLimit) {
+                vPlaneBytes = new byte[vLimit];
+            }
+            vBuf.position(0);
+            vBuf.get(vPlaneBytes, 0, vLimit);
 
             int outOffset = 0;
             for (int row = 0; row < imgH; row++) {
@@ -2113,9 +2135,9 @@ public class ViewfinderClient {
                     int uIdx = uRowStart + uvCol * uPixelStride;
                     int vIdx = vRowStart + uvCol * vPixelStride;
 
-                    int y = (yIdx < yLimit ? (yBuf.get(yIdx) & 0xFF) : 16) - 16;
-                    int u = (uIdx < uLimit ? (uBuf.get(uIdx) & 0xFF) : 128) - 128;
-                    int v = (vIdx < vLimit ? (vBuf.get(vIdx) & 0xFF) : 128) - 128;
+                    int y = (yIdx < yLimit ? (yPlaneBytes[yIdx] & 0xFF) : 16) - 16;
+                    int u = (uIdx < uLimit ? (uPlaneBytes[uIdx] & 0xFF) : 128) - 128;
+                    int v = (vIdx < vLimit ? (vPlaneBytes[vIdx] & 0xFF) : 128) - 128;
                     if (y < 0) y = 0;
 
                     int y1192 = 1192 * y;
@@ -2155,19 +2177,24 @@ public class ViewfinderClient {
             }
 
             buf.position(info.offset);
-            int limit = info.offset + info.size;
-            int uvBase = info.offset + stride * sliceHeight;
+            int bufLen = Math.min(info.size, buf.remaining());
+            if (rawYuvBytes == null || rawYuvBytes.length < bufLen) {
+                rawYuvBytes = new byte[bufLen];
+            }
+            buf.get(rawYuvBytes, 0, bufLen);
+
+            int uvBase = stride * sliceHeight;
 
             int outOffset = 0;
             for (int row = 0; row < imgH; row++) {
-                int yRow = info.offset + row * stride;
+                int yRow = row * stride;
                 int uvRow = uvBase + (row >> 1) * stride;
                 for (int col = 0; col < imgW; col++) {
                     int yIdx = yRow + col;
                     int uvIdx = uvRow + (col & ~1);
-                    int y = (yIdx < limit ? (buf.get(yIdx) & 0xFF) : 16) - 16;
-                    int u = (uvIdx < limit ? (buf.get(uvIdx) & 0xFF) : 128) - 128;
-                    int v = (uvIdx + 1 < limit ? (buf.get(uvIdx + 1) & 0xFF) : 128) - 128;
+                    int y = (yIdx < bufLen ? (rawYuvBytes[yIdx] & 0xFF) : 16) - 16;
+                    int u = (uvIdx < bufLen ? (rawYuvBytes[uvIdx] & 0xFF) : 128) - 128;
+                    int v = (uvIdx + 1 < bufLen ? (rawYuvBytes[uvIdx + 1] & 0xFF) : 128) - 128;
                     if (y < 0) y = 0;
 
                     int y1192 = 1192 * y;
@@ -2407,18 +2434,20 @@ public class ViewfinderClient {
     }
 
     public static void triggerShutter(final String cameraIp, final ShutterCallback callback) {
-        triggerShutter(cameraIp, true, callback);
+        triggerShutter(cameraIp, false, callback);
     }
 
     /**
      * Full, reliable capture sequence matching Samsung RVF (LiveShutter) & SmartCamera (RemoteViewFinder):
-     * 1. If autoFocusFirst is true (not already focus-locked), runs MULTIAF/AF with 30s timeout.
-     *    On AF failure: calls ReleaseSelfTimer(0) and aborts cleanly while keeping live stream running.
-     * 2. Dispatches Shot action using the camera's SCPD input arguments (parameterless on NX1000 RVF 2.2,
-     *    or <REQUESTIMAGE>1</REQUESTIMAGE> on SmartCamera 2.0/3.0, with automatic fallback).
-     * 3. Stops the old live stream connection once the camera captures the image, downloads the
-     *    screen-nail (<AFSHOTRESULT>_SM) and/or full-res photo to DCIM/NX_MobileLink,
-     *    registers with MediaScanner, and automatically restarts the live stream in finally!
+     * 1. Stops live video stream first (matching LiveShutter stop_codec() / NDKRelease()),
+     *    instructing the camera DSP to halt its real-time video encoder and release
+     *    hardware RAM/buffers for full-resolution sensor readout, Bayer demosaicing, and JPEG capture.
+     * 2. Dispatches parameterless UPnP SOAP <u:Shot xmlns:u="..."/> action directly (or <REQUESTIMAGE>1</REQUESTIMAGE>
+     *    fallback), letting camera DSP execute native focus & exposure without double motor strain.
+     * 3. Extracts <AFSHOTRESULT> and <AVAILSHOTS>.
+     * 4. Downloads screen-nail JPEG (<AFSHOTRESULT>_SM) matching Samsung LiveShutter Thumbnaildown(),
+     *    which completes the camera's capture cycle and saves the photo to DCIM/NX_MobileLink.
+     * 5. Automatically restarts the live video stream in finally (matching LiveShutter initcodec() / DISPLAY_STREAM).
      */
     public static void triggerShutter(final String cameraIp, final boolean autoFocusFirst, final ShutterCallback callback) {
         new Thread(new Runnable() {
@@ -2435,20 +2464,23 @@ public class ViewfinderClient {
                     UpnpEndpoint ep = getPrimaryEndpoint(ip);
                     String serviceType = (ep != null && ep.serviceType != null) ? ep.serviceType : UPNP_SERVICE_CONTENT_DIR;
 
-                    // 1. Autofocus first if requested (skipped if user already locked focus via Focus button / tap)
+                    // 1. MATCHING SAMSUNG LIVE SHUTTER (stop_codec):
+                    // Stop live stream BEFORE Shot so camera DSP frees video encoder buffers & CPU!
+                    Log.i(TAG, "triggerShutter: Stopping live stream before Shot capture...");
+                    stopLiveStream();
+                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+
                     if (autoFocusFirst) {
-                        Log.i(TAG, "triggerShutter: Executing pre-capture MULTIAF...");
-                        String afResp = executeAutoFocusInternal(ep, serviceType);
-                        if (afResp != null) {
-                            String unescaped = unescapeXml(afResp);
-                            String afStatus = extractXmlTag(unescaped, "AFSTATUS");
-                            Log.i(TAG, "Pre-capture MULTIAF completed. AFSTATUS=" + afStatus);
-                            if (!isAfSuccess(afStatus)) {
-                                Log.w(TAG, "Pre-capture autofocus failed; releasing focus");
-                                releaseFocusInternal(ep, serviceType);
-                                if (callback != null) callback.onError("Autofocus failed (AFSTATUS=" + afStatus + ")");
-                                return;
+                        Log.i(TAG, "triggerShutter: Executing optional pre-capture MULTIAF...");
+                        try {
+                            String afResp = executeAutoFocusInternal(ep, serviceType);
+                            if (afResp != null) {
+                                String unescaped = unescapeXml(afResp);
+                                String afStatus = extractXmlTag(unescaped, "AFSTATUS");
+                                Log.i(TAG, "Pre-capture MULTIAF result: AFSTATUS=" + afStatus);
                             }
+                        } catch (Exception afEx) {
+                            Log.w(TAG, "Optional pre-capture AF notice: " + afEx.getMessage());
                         }
                     }
 
@@ -2492,9 +2524,6 @@ public class ViewfinderClient {
                             }
                         }
 
-                        // Stop old live stream reader now that Shot has been processed by the camera
-                        stopLiveStream();
-
                         if (shotResponse != null) {
                             String unescaped = unescapeXml(shotResponse);
                             String fileUrl = extractXmlTag(unescaped, "AFSHOTRESULT");
@@ -2519,9 +2548,10 @@ public class ViewfinderClient {
                             if (callback != null) callback.onError("Camera did not respond to Shot command");
                         }
                     } finally {
-                        // 3. Always restart live stream after Shot & download complete (matching StartCodecTask / DISPLAY_STREAM)
+                        // 3. MATCHING SAMSUNG LIVE SHUTTER (initcodec / start_codec):
+                        // Always restart live stream after capture and thumbnail download complete!
                         if (wasStreaming && savedFrameCallback != null) {
-                            try { Thread.sleep(250); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(300); } catch (InterruptedException ignored) {}
                             startLiveStream(ip, savedFrameCallback);
                         }
                     }

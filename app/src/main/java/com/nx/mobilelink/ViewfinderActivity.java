@@ -56,6 +56,7 @@ public class ViewfinderActivity extends Activity {
     private FrameLayout btnShutter;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final java.util.concurrent.atomic.AtomicBoolean isFrameRendering = new java.util.concurrent.atomic.AtomicBoolean(false);
     private boolean isConnecting = false;
     private String connectedCameraIp = null;
     private boolean isFocusLocked = false;
@@ -403,14 +404,21 @@ public class ViewfinderActivity extends Activity {
         ViewfinderClient.startLiveStream(cameraIp, new ViewfinderClient.FrameCallback() {
             @Override
             public void onFrame(final Bitmap frame) {
-                mainHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        layoutPlaceholder.setVisibility(View.GONE);
-                        imgPreview.setVisibility(View.VISIBLE);
-                        imgPreview.setImageBitmap(frame);
-                    }
-                });
+                if (frame == null) return;
+                if (isFrameRendering.compareAndSet(false, true)) {
+                    mainHandler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                layoutPlaceholder.setVisibility(View.GONE);
+                                imgPreview.setVisibility(View.VISIBLE);
+                                imgPreview.setImageBitmap(frame);
+                            } finally {
+                                isFrameRendering.set(false);
+                            }
+                        }
+                    });
+                }
             }
 
             @Override
@@ -431,20 +439,19 @@ public class ViewfinderActivity extends Activity {
             return;
         }
 
-        final boolean autoFocusFirst = !isFocusLocked;
         mainHandler.removeCallbacks(focusReleaseRunnable);
         isFocusLocked = false;
 
         btnShutter.setEnabled(false);
         btnShutter.setAlpha(0.5f);
-        txtStatusBadge.setText(autoFocusFirst ? "🔍 Focusing & Capturing photo..." : "📸 Capturing photo...");
+        txtStatusBadge.setText("📸 Capturing photo...");
         txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
         txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
-        Toast.makeText(this, autoFocusFirst ? "Focusing & Capturing photo..." : "Capturing photo...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Capturing photo...", Toast.LENGTH_SHORT).show();
 
-        // Performs synchronized capture flow:
-        // (Optional MULTIAF if not already focus-locked) -> Shot -> Download _SM / image -> Resume Live Stream
-        ViewfinderClient.triggerShutter(connectedCameraIp, autoFocusFirst, new ViewfinderClient.ShutterCallback() {
+        // Performs synchronized capture flow matching Samsung RVF:
+        // Live Stream Paused -> Shot -> Download _SM / image -> Resume Live Stream
+        ViewfinderClient.triggerShutter(connectedCameraIp, new ViewfinderClient.ShutterCallback() {
             @Override
             public void onSuccess(final String savedFilePath) {
                 mainHandler.post(new Runnable() {
