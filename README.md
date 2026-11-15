@@ -1,6 +1,6 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.6.4-blue.svg)](release/NX-MobileLink-v1.6.4.apk)
+[![Release](https://img.shields.io/badge/Release-v1.6.5-blue.svg)](release/NX-MobileLink-v1.6.5.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 [![Attribution](https://img.shields.io/badge/Legal-Attribution-orange.svg)](ATTRIBUTION.md)
@@ -35,14 +35,15 @@ This project is a clean-room, reverse-engineered native Android solution that co
   - Direct automatic photo loading without artificial polling delays.
   - Zero-collision downloading with automated deduplication and modern MediaStore integration (`Pictures/NX1000`).
   - Global atomic download lock with silent keepalive suspension during downloads, preventing socket congestion and camera disconnects.
-- **Dedicated Remote Viewfinder Engine**:
-  - Clean UPnP RVF protocol reconstructed from official Samsung APK bytecode.
-  - Mutual authentication via root XML & SCPDURL description fetch with `SEC_RVF_<MAC>` User-Agent.
-  - Dynamic stream discovery via single SOAP `GetInfomation` returning `<GETIPRESULT>` (`StreamURL`, e.g. `http://<cam_ip>:8080/stream.jpg`) and `<AVAILSHOTS>`.
-  - Continuous live MJPEG stream decoding directly from the camera's dynamic endpoint.
-  - Eliminated fabricated non-existent background probes (ports 7788/7679) and 3s polling that previously caused camera socket exhaustion.
-  - Remote shutter trigger via UPnP SOAP `Shot` with automated post-capture `Thumbnaildown` (`FileURL + "_SM"`) cycle to cleanly resume live streaming.
-- **Ultra-Lightweight & Native**: Zero bloated third-party dependencies, built entirely using native Android APIs. The compiled, signed APK is only **~100 KB**!
+- **Dedicated Remote Viewfinder Engine (Hardware Diagnostics Verified)**:
+  - Clean UPnP RVF protocol reconstructed from official Samsung APK bytecode and verified against physical Samsung NX1000 camera hardware.
+  - Mutual authentication via root XML (`/smp_2_`) & SCPDURL (`/smp_3_`) description fetch with `SEC_RVF_<MAC>` User-Agent.
+  - UPnP SOAP `GetInfomation` action on control path `/smp_4_` returning dynamic `<GETIPRESULT>` (`http://<cam_ip>:7679/livestream.avi`), available shots, rotation, and supported resolutions.
+  - Direct raw TCP socket streaming on port 7679 using `Range: bytes=0-` and `Connection: close` (preventing VxWorks HTTP server buffer stalls and connection resets).
+  - Native AVI stream demuxer extracting 320x240 H.264 video chunks (`00dc`/`00db`), parsing SPS/PPS parameter sets, and hardware decoding via Android `MediaCodec` at ~15 FPS.
+  - Autofocus (`MULTIAF` / `AF`) control with auto-releasing focus locks (`ReleaseSelfTimer`).
+  - Remote shutter trigger via UPnP SOAP `Shot` with automated DSP video buffer pause and post-capture `_SM` thumbnail download cycle.
+- **Ultra-Lightweight & Native**: Zero bloated third-party dependencies, built entirely using native Android APIs. The compiled, signed APK is only **~120 KB**!
 
 ---
 
@@ -53,9 +54,9 @@ This application underwent a comprehensive OWASP security review and incorporate
 1. **Path Traversal Protection**: All downloaded file names are rigorously sanitized, stripping path traversal sequences (`..`, `/`, `\`), and enforced via canonical directory containment (`canonicalDest.getPath().startsWith(canonicalTarget.getPath())`).
 2. **Secure XML Parsers (Anti-XXE)**: All XML document parsers explicitly disable `DOCTYPE` declarations, external general entities, external parameter entities, external DTD loading, and entity expansion (`disallow-doctype-decl = true`).
 3. **DoS Prevention (Bounded Buffers & Threading)**:
-   - MJPEG live stream reader enforces a 5MB maximum frame size ceiling, discarding malformed streams.
+   - Live stream reader enforces strict packet and chunk size ceilings, discarding malformed streams.
    - HTTP header reader caps line lengths at 8192 bytes against slowloris attacks.
-   - Local keep-alive callback server employs a bounded 4-thread `ExecutorService` pool instead of unbounded thread creation.
+   - Bounded thread execution with strict serialization locks preventing socket congestion.
 4. **Data Privacy**: Backup extraction is explicitly disabled (`android:allowBackup="false"`).
 5. **SSRF Mitigation**: DLNA resource URLs are verified against the camera's base host and private subnets, rejecting loopback and arbitrary redirections.
 6. **SOAP Argument Sanitization**: All UPnP SOAP request parameters and XML attributes are strictly escaped against XML/SOAP injection.
@@ -66,7 +67,7 @@ This application underwent a comprehensive OWASP security review and incorporate
 
 You can download the pre-built, signed APK directly from this repository:
 
-👉 **[Download NX-MobileLink-v1.6.4.apk](release/NX-MobileLink-v1.6.4.apk)**  
+👉 **[Download NX-MobileLink-v1.6.5.apk](release/NX-MobileLink-v1.6.5.apk)**  
 *(Also available as [NX-MobileLink.apk](release/NX-MobileLink.apk))*
 
 1. Transfer or download the APK to your Android device.

@@ -52,16 +52,16 @@ Write-Host "7. Aligning APK with zipalign..."
 if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
 
 Write-Host "8. Signing APK with apksigner (v1 + v2)..."
-& "$BUILD_TOOLS\apksigner.bat" sign --min-sdk-version 21 --v1-signing-enabled true --v2-signing-enabled true --ks $KEYSTORE --ks-pass pass:android --key-pass pass:android --out release\NX-MobileLink-v1.6.4.apk build\aligned.apk
+& "$BUILD_TOOLS\apksigner.bat" sign --min-sdk-version 21 --v1-signing-enabled true --v2-signing-enabled true --ks $KEYSTORE --ks-pass pass:android --key-pass pass:android --out release\NX-MobileLink-v1.6.5.apk build\aligned.apk
 if ($LASTEXITCODE -ne 0) { throw "apksigner failed" }
 
 Write-Host "9. Verifying signature..."
-& "$BUILD_TOOLS\apksigner.bat" verify -v release\NX-MobileLink-v1.6.4.apk
+& "$BUILD_TOOLS\apksigner.bat" verify -v release\NX-MobileLink-v1.6.5.apk
 
-Copy-Item -Force "release\NX-MobileLink-v1.6.4.apk" "release\NX-MobileLink.apk"
+Copy-Item -Force "release\NX-MobileLink-v1.6.5.apk" "release\NX-MobileLink.apk"
 if (Test-Path "$USERPROFILE\Downloads") {
-    Copy-Item -Force "release\NX-MobileLink-v1.6.4.apk" "$USERPROFILE\Downloads\NX-MobileLink.apk"
-    Copy-Item -Force "release\NX-MobileLink-v1.6.4.apk" "$USERPROFILE\Downloads\NX-MobileLink-v1.6.4.apk"
+    Copy-Item -Force "release\NX-MobileLink-v1.6.5.apk" "$USERPROFILE\Downloads\NX-MobileLink.apk"
+    Copy-Item -Force "release\NX-MobileLink-v1.6.5.apk" "$USERPROFILE\Downloads\NX-MobileLink-v1.6.5.apk"
 }
 
-Write-Host "BUILD SUCCESSFUL! Output: release\NX-MobileLink-v1.6.4.apk (Size: $((Get-Item release\NX-MobileLink-v1.6.4.apk).Length) bytes)"
+Write-Host "BUILD SUCCESSFUL! Output: release\NX-MobileLink-v1.6.5.apk (Size: $((Get-Item release\NX-MobileLink-v1.6.5.apk).Length) bytes)"

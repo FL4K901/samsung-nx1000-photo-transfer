@@ -1145,49 +1145,15 @@ public class ViewfinderClient {
                     for (String urlStr : streamUrls) {
                         if (!isStreaming.get()) break;
 
-                        // Path 1: HttpURLConnection with 256KB BufferedInputStream (exact match to LORQUAD08 H264Player.smali)
-                        java.net.HttpURLConnection conn = null;
-                        try {
-                            URL url = new URL(urlStr);
-                            if (activeWifiNetwork != null && Build.VERSION.SDK_INT >= 21) {
-                                conn = (java.net.HttpURLConnection) activeWifiNetwork.openConnection(url);
-                            } else {
-                                conn = (java.net.HttpURLConnection) url.openConnection();
-                            }
-                            activeStreamConn = conn;
-                            conn.setConnectTimeout(4000);
-                            conn.setReadTimeout(4000);
-                            conn.setRequestProperty("User-Agent", "Lavf52.103.0");
-                            conn.connect();
-
-                            BufferedInputStream bufferedIn = new BufferedInputStream(conn.getInputStream(), 262144);
-                            int frames = decodeCameraStream(bufferedIn, urlStr, frameCallback);
-                            if (frames > 0) {
-                                gotAnyFrames = true;
-                                consecutiveErrors = 0;
-                                break;
-                            }
-                        } catch (Exception e) {
-                            if (isStreaming.get()) {
-                                Log.d(TAG, "HttpURLConnection stream notice on " + urlStr + ": " + e.getMessage());
-                            }
-                        } finally {
-                            activeStreamConn = null;
-                            if (conn != null) {
-                                try { conn.disconnect(); } catch (Exception ignored) {}
-                            }
-                        }
-
-                        if (!isStreaming.get() || gotAnyFrames) break;
-
-                        // Path 2: Raw Socket fallback (libffplay-jni.so Lavf52.103.0 HTTP GET)
+                        // Direct raw TCP Socket matching libffplay / Lavf and hardware-verified test_continuous_stream.py:
+                        // Exact headers: Range: bytes=0-, Connection: close, User-Agent: Lavf52.103.0
                         Socket sock = null;
                         try {
                             URL url = new URL(urlStr);
                             String host = url.getHost();
-                            int port = url.getPort() != -1 ? url.getPort() : 7678;
+                            int port = url.getPort() != -1 ? url.getPort() : 7679;
                             String path = url.getFile();
-                            if (path == null || path.isEmpty()) path = "/";
+                            if (path == null || path.isEmpty()) path = "/livestream.avi";
 
                             sock = new Socket();
                             activeStreamSocket = sock;
@@ -1199,10 +1165,9 @@ public class ViewfinderClient {
                             sock.setTcpNoDelay(true);
                             sock.setKeepAlive(true);
                             sock.setReceiveBufferSize(256 * 1024);
-                            sock.setSoTimeout(8000);
+                            sock.setSoTimeout(10000);
                             sock.connect(new InetSocketAddress(host, port), 4000);
 
-                            // Exact HTTP request sent by libffplay-jni.so (Lavf52.103.0)
                             String hostHeader = (port == 80) ? host : (host + ":" + port);
                             String req = "GET " + path + " HTTP/1.1\r\n" +
                                          "User-Agent: Lavf52.103.0\r\n" +
@@ -1500,25 +1465,50 @@ public class ViewfinderClient {
         int decodedFrames = 0;
 
         try {
+            ByteArrayOutputStream headerBuf = new ByteArrayOutputStream(2048);
             int window = 0;
-            int headerBytesScanned = 0;
-            // 1. Scan for "movi" (0x6d6f7669)
+            // 1. Scan for "movi" (0x6d6f7669) while buffering the AVI header
             while (isStreaming.get() && !Thread.currentThread().isInterrupted()) {
                 int b = in.read();
                 if (b < 0) return decodedFrames;
+                headerBuf.write(b);
                 window = (window << 8) | (b & 0xFF);
-                headerBytesScanned++;
                 if (window == 0x6d6f7669) { // "movi"
                     break;
                 }
-                if (headerBytesScanned > 512 * 1024) {
+                if (headerBuf.size() > 512 * 1024) {
                     return decodedFrames;
                 }
             }
 
-            // Initialize MediaCodec immediately for video/avc 640x480 (LORQUAD08 initOffscreenCodec)
-            videoDecoder.configureFromHeader("H264", 640, 480, null);
-            videoDecoder.ensureInitialized();
+            byte[] hdr = headerBuf.toByteArray();
+            int streamWidth = 320;
+            int streamHeight = 240;
+
+            // Parse resolution from 'strf' chunk (BITMAPINFOHEADER: biWidth at offset 4, biHeight at offset 8)
+            int strfIdx = indexOfBytes(hdr, new byte[]{'s', 't', 'r', 'f'});
+            if (strfIdx >= 0 && strfIdx + 8 + 12 <= hdr.length) {
+                int w = readInt32LE(hdr, strfIdx + 8 + 4);
+                int h = readInt32LE(hdr, strfIdx + 8 + 8);
+                if (w > 0 && w <= 4096 && h > 0 && h <= 4096) {
+                    streamWidth = w;
+                    streamHeight = h;
+                }
+            }
+            if (streamWidth == 320 && streamHeight == 240) {
+                // Check 'avih' chunk (MainAVIHeader: dwWidth at offset 32, dwHeight at offset 36)
+                int avihIdx = indexOfBytes(hdr, new byte[]{'a', 'v', 'i', 'h'});
+                if (avihIdx >= 0 && avihIdx + 8 + 40 <= hdr.length) {
+                    int w = readInt32LE(hdr, avihIdx + 8 + 32);
+                    int h = readInt32LE(hdr, avihIdx + 8 + 36);
+                    if (w > 0 && w <= 4096 && h > 0 && h <= 4096) {
+                        streamWidth = w;
+                        streamHeight = h;
+                    }
+                }
+            }
+            Log.i(TAG, "Configuring video decoder for camera stream: " + streamWidth + "x" + streamHeight);
+            videoDecoder.configureFromHeader("H264", streamWidth, streamHeight, null);
 
             byte[] chunkBuf = new byte[262144];
             window = 0;
@@ -1550,6 +1540,10 @@ public class ViewfinderClient {
                             // Count initial SPS/PPS/IDR warm-up packets so stream loop knows stream is active
                             decodedFrames = 1;
                         }
+                        // Discard 1-byte padding if chunk size is odd
+                        if ((chunkSize & 1) != 0) {
+                            in.read();
+                        }
                     }
                 }
             }
@@ -1558,6 +1552,18 @@ public class ViewfinderClient {
         }
 
         return decodedFrames;
+    }
+
+    private static int indexOfBytes(byte[] haystack, byte[] needle) {
+        if (haystack == null || needle == null || haystack.length < needle.length) return -1;
+        outer:
+        for (int i = 0; i <= haystack.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) continue outer;
+            }
+            return i;
+        }
+        return -1;
     }
 
     private static boolean isVideoChunkFourCC(String fourCC) {
@@ -1794,8 +1800,8 @@ public class ViewfinderClient {
         private final FrameCallback frameCallback;
         private MediaCodec codec;
         private String mimeType = "video/avc";
-        private int width = 640;
-        private int height = 480;
+        private int width = 320;
+        private int height = 240;
         private byte[] extraData;
         private byte[] csd0;
         private byte[] csd1;
@@ -1803,8 +1809,6 @@ public class ViewfinderClient {
         private long ptsUs = 0;
 
         private int[] argbPixels;
-        private final Bitmap[] bitmapPool = new Bitmap[2];
-        private int poolIndex = 0;
         private byte[] yPlaneBytes;
         private byte[] uPlaneBytes;
         private byte[] vPlaneBytes;
@@ -1850,6 +1854,12 @@ public class ViewfinderClient {
                 }
             }
 
+            if ("video/avc".equals(mimeType)) {
+                if (csd0 == null) {
+                    extractCsdFromBytes(data, offset, length);
+                }
+            }
+
             if (!configured) {
                 if (!initMediaCodec()) {
                     return false;
@@ -1884,7 +1894,7 @@ public class ViewfinderClient {
                         int toPut = Math.min(length, inBuf.remaining());
                         inBuf.put(data, offset, toPut);
                         codec.queueInputBuffer(inIdx, 0, toPut, ptsUs, 0);
-                        ptsUs += 33333; // ~30 fps
+                        ptsUs += 66666; // ~15 fps (NX1000 native stream frame interval)
                     }
                 }
 
@@ -2153,14 +2163,7 @@ public class ViewfinderClient {
                 }
             }
 
-            poolIndex ^= 1;
-            Bitmap bmp = bitmapPool[poolIndex];
-            if (bmp == null || bmp.getWidth() != imgW || bmp.getHeight() != imgH || !bmp.isMutable()) {
-                bmp = Bitmap.createBitmap(imgW, imgH, Bitmap.Config.ARGB_8888);
-                bitmapPool[poolIndex] = bmp;
-            }
-            bmp.setPixels(argbPixels, 0, imgW, 0, 0, imgW, imgH);
-            return bmp;
+            return Bitmap.createBitmap(argbPixels, imgW, imgH, Bitmap.Config.ARGB_8888);
         }
 
         private Bitmap rawYuvBufferToBitmap(ByteBuffer buf, MediaCodec.BufferInfo info, MediaFormat fmt) {
@@ -2210,14 +2213,7 @@ public class ViewfinderClient {
                 }
             }
 
-            poolIndex ^= 1;
-            Bitmap bmp = bitmapPool[poolIndex];
-            if (bmp == null || bmp.getWidth() != imgW || bmp.getHeight() != imgH || !bmp.isMutable()) {
-                bmp = Bitmap.createBitmap(imgW, imgH, Bitmap.Config.ARGB_8888);
-                bitmapPool[poolIndex] = bmp;
-            }
-            bmp.setPixels(argbPixels, 0, imgW, 0, 0, imgW, imgH);
-            return bmp;
+            return Bitmap.createBitmap(argbPixels, imgW, imgH, Bitmap.Config.ARGB_8888);
         }
 
         void release() {
