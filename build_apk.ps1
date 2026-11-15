@@ -59,6 +59,7 @@ Write-Host "9. Verifying signature..."
 & "$BUILD_TOOLS\apksigner.bat" verify -v release\NX-MobileLink-v1.6.8.apk
 
 Copy-Item -Force "release\NX-MobileLink-v1.6.8.apk" "release\NX-MobileLink.apk"
+Remove-Item -Path "release\*.idsig" -Force -ErrorAction SilentlyContinue
 if (Test-Path "$USERPROFILE\Downloads") {
     Copy-Item -Force "release\NX-MobileLink-v1.6.8.apk" "$USERPROFILE\Downloads\NX-MobileLink.apk"
     Copy-Item -Force "release\NX-MobileLink-v1.6.8.apk" "$USERPROFILE\Downloads\NX-MobileLink-v1.6.8.apk"

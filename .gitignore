@@ -9,13 +9,17 @@ local.properties
 # Log/OS Files
 *.log
 
+# Local scripts
+*.bat
+
 # Android Studio generated files and folders
 captures/
 .externalNativeBuild/
 .cxx/
 *.aab
 *.apk
-!release/*.apk
+!release/NX-MobileLink.apk
+!release/NX-MobileLink-v1.6.8.apk
 *.idsig
 output-metadata.json
 
