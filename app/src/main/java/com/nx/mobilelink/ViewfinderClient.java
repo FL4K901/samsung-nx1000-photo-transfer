@@ -58,6 +58,10 @@ import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
@@ -125,6 +129,7 @@ public class ViewfinderClient {
     public interface FrameCallback {
         void onFrame(Bitmap frame);
         void onStreamError(String error);
+        default boolean isReadyForFrame() { return true; }
     }
 
     public interface ShutterCallback {
@@ -186,6 +191,76 @@ public class ViewfinderClient {
     private static volatile String lastCapturedFileUrl = "";
     private static final Object discoveryLock = new Object();
     private static final AtomicBoolean handshakeInProgress = new AtomicBoolean(false);
+
+    private static final int[] CLAMP_TABLE = new int[1024];
+    static {
+        for (int i = 0; i < 1024; i++) {
+            int val = i - 256;
+            CLAMP_TABLE[i] = (val < 0) ? 0 : (val > 255 ? 255 : val);
+        }
+    }
+
+    private static ScheduledExecutorService keepAliveExecutor = null;
+    private static volatile long lastSoapCommandTime = 0;
+
+    public static synchronized void startKeepAlive(final String cameraIp) {
+        stopKeepAlive();
+        lastSoapCommandTime = System.currentTimeMillis();
+        keepAliveExecutor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread t = new Thread(r, "NX-RVF-KeepAlive");
+                t.setDaemon(true);
+                return t;
+            }
+        });
+        keepAliveExecutor.scheduleWithFixedDelay(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (!isStreaming.get() && activeCameraIp == null) {
+                        return;
+                    }
+                    long now = System.currentTimeMillis();
+                    // Periodic keep-alive ping if no UPnP command was sent in the last 10 seconds
+                    if (now - lastSoapCommandTime >= 10000) {
+                        if (commandLock.tryLock()) {
+                            try {
+                                String ip = (cameraIp != null && !cameraIp.isEmpty()) ? cameraIp :
+                                            (activeCameraIp != null ? activeCameraIp : "192.168.107.1");
+                                boolean ok = executeGetInformation(ip);
+                                if (ok) {
+                                    lastSoapCommandTime = System.currentTimeMillis();
+                                    Log.d(TAG, "Keep-alive ping SUCCESS (shots=" + availableShots + ")");
+                                }
+                            } finally {
+                                commandLock.unlock();
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.d(TAG, "Keep-alive notice: " + e.getMessage());
+                }
+            }
+        }, 8, 8, TimeUnit.SECONDS);
+    }
+
+    public static synchronized void stopKeepAlive() {
+        if (keepAliveExecutor != null) {
+            try {
+                keepAliveExecutor.shutdownNow();
+            } catch (Exception ignored) {}
+            keepAliveExecutor = null;
+        }
+    }
+
+    public static int getCurrentRotationDegrees() {
+        int rot = currentRotation;
+        if (rot == 2 || rot == 8 || rot == 'L') return 270;
+        if (rot == 3 || rot == 'U') return 180;
+        if (rot == 4 || rot == 6 || rot == 'R') return 90;
+        return 0;
+    }
 
     public static String getWifiGatewayIp(Context context) {
         try {
@@ -1147,6 +1222,7 @@ public class ViewfinderClient {
         stopLiveStream();
         lastFrameCallback = frameCallback;
         isStreaming.set(true);
+        startKeepAlive(cameraIp);
 
         streamThread = new Thread(new Runnable() {
             @Override
@@ -1196,7 +1272,7 @@ public class ViewfinderClient {
                             }
                             sock.setTcpNoDelay(true);
                             sock.setKeepAlive(true);
-                            sock.setReceiveBufferSize(256 * 1024);
+                            sock.setReceiveBufferSize(512 * 1024);
                             sock.setSoTimeout(25000);
                             sock.connect(new InetSocketAddress(host, port), 4000);
 
@@ -1280,6 +1356,7 @@ public class ViewfinderClient {
 
     public static void stopLiveStream() {
         isStreaming.set(false);
+        stopKeepAlive();
         java.net.HttpURLConnection conn = activeStreamConn;
         activeStreamConn = null;
         if (conn != null) {
@@ -1781,11 +1858,13 @@ public class ViewfinderClient {
                     frameBuffer.write(b);
                     if (prevByte == 0xFF && b == 0xD9) {
                         inJpeg = false;
-                        byte[] jpegBytes = frameBuffer.toByteArray();
-                        Bitmap bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.length);
-                        if (bmp != null) {
-                            framesDecoded++;
-                            frameCallback.onFrame(applyCameraRotation(bmp));
+                        if (frameCallback == null || frameCallback.isReadyForFrame()) {
+                            byte[] jpegBytes = frameBuffer.toByteArray();
+                            Bitmap bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.length);
+                            if (bmp != null) {
+                                framesDecoded++;
+                                frameCallback.onFrame(applyCameraRotation(bmp));
+                            }
                         }
                         frameBuffer.reset();
                     } else if (frameBuffer.size() > 2 * 1024 * 1024) {
@@ -1845,6 +1924,8 @@ public class ViewfinderClient {
         private byte[] uPlaneBytes;
         private byte[] vPlaneBytes;
         private byte[] rawYuvBytes;
+        private final Bitmap[] reusableBitmaps = new Bitmap[2];
+        private int activeBufferIndex = 0;
 
         LiveVideoDecoder(FrameCallback frameCallback) {
             this.frameCallback = frameCallback;
@@ -2081,6 +2162,12 @@ public class ViewfinderClient {
                     timeoutUs = initialTimeoutUs;
                     Log.i(TAG, "MediaCodec output format changed: " + newFormat);
                 } else if (outIdx >= 0) {
+                    if (frameCallback != null && !frameCallback.isReadyForFrame()) {
+                        // Drop frame instantly without decoding to prevent TCP backpressure & camera LCD freeze
+                        codec.releaseOutputBuffer(outIdx, false);
+                        continue;
+                    }
+
                     Bitmap frameBmp = null;
                     try {
                         if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && Build.VERSION.SDK_INT >= 21) {
@@ -2182,19 +2269,24 @@ public class ViewfinderClient {
                     if (y < 0) y = 0;
 
                     int y1192 = 1192 * y;
-                    int r = (y1192 + 1634 * v) >> 10;
-                    int g = (y1192 - 833 * v - 400 * u) >> 10;
-                    int b = (y1192 + 2066 * u) >> 10;
-
-                    if (r < 0) r = 0; else if (r > 255) r = 255;
-                    if (g < 0) g = 0; else if (g > 255) g = 255;
-                    if (b < 0) b = 0; else if (b > 255) b = 255;
+                    int r = CLAMP_TABLE[((y1192 + 1634 * v) >> 10) + 256];
+                    int g = CLAMP_TABLE[((y1192 - 833 * v - 400 * u) >> 10) + 256];
+                    int b = CLAMP_TABLE[((y1192 + 2066 * u) >> 10) + 256];
 
                     argbPixels[outOffset++] = 0xFF000000 | (r << 16) | (g << 8) | b;
                 }
             }
 
-            return Bitmap.createBitmap(argbPixels, imgW, imgH, Bitmap.Config.ARGB_8888);
+            if (reusableBitmaps[0] == null || reusableBitmaps[0].getWidth() != imgW || reusableBitmaps[0].getHeight() != imgH) {
+                reusableBitmaps[0] = Bitmap.createBitmap(imgW, imgH, Bitmap.Config.ARGB_8888);
+                reusableBitmaps[1] = Bitmap.createBitmap(imgW, imgH, Bitmap.Config.ARGB_8888);
+                activeBufferIndex = 0;
+            }
+
+            activeBufferIndex = 1 - activeBufferIndex;
+            Bitmap targetBmp = reusableBitmaps[activeBufferIndex];
+            targetBmp.setPixels(argbPixels, 0, imgW, 0, 0, imgW, imgH);
+            return targetBmp;
         }
 
         private Bitmap rawYuvBufferToBitmap(ByteBuffer buf, MediaCodec.BufferInfo info, MediaFormat fmt) {
@@ -2232,19 +2324,24 @@ public class ViewfinderClient {
                     if (y < 0) y = 0;
 
                     int y1192 = 1192 * y;
-                    int r = (y1192 + 1634 * v) >> 10;
-                    int g = (y1192 - 833 * v - 400 * u) >> 10;
-                    int b = (y1192 + 2066 * u) >> 10;
-
-                    if (r < 0) r = 0; else if (r > 255) r = 255;
-                    if (g < 0) g = 0; else if (g > 255) g = 255;
-                    if (b < 0) b = 0; else if (b > 255) b = 255;
+                    int r = CLAMP_TABLE[((y1192 + 1634 * v) >> 10) + 256];
+                    int g = CLAMP_TABLE[((y1192 - 833 * v - 400 * u) >> 10) + 256];
+                    int b = CLAMP_TABLE[((y1192 + 2066 * u) >> 10) + 256];
 
                     argbPixels[outOffset++] = 0xFF000000 | (r << 16) | (g << 8) | b;
                 }
             }
 
-            return Bitmap.createBitmap(argbPixels, imgW, imgH, Bitmap.Config.ARGB_8888);
+            if (reusableBitmaps[0] == null || reusableBitmaps[0].getWidth() != imgW || reusableBitmaps[0].getHeight() != imgH) {
+                reusableBitmaps[0] = Bitmap.createBitmap(imgW, imgH, Bitmap.Config.ARGB_8888);
+                reusableBitmaps[1] = Bitmap.createBitmap(imgW, imgH, Bitmap.Config.ARGB_8888);
+                activeBufferIndex = 0;
+            }
+
+            activeBufferIndex = 1 - activeBufferIndex;
+            Bitmap targetBmp = reusableBitmaps[activeBufferIndex];
+            targetBmp.setPixels(argbPixels, 0, imgW, 0, 0, imgW, imgH);
+            return targetBmp;
         }
 
         void release() {
@@ -2254,6 +2351,8 @@ public class ViewfinderClient {
                 try { codec.release(); } catch (Exception ignored) {}
                 codec = null;
             }
+            reusableBitmaps[0] = null;
+            reusableBitmaps[1] = null;
         }
     }
 
@@ -2361,6 +2460,11 @@ public class ViewfinderClient {
                         break;
                     }
                 }
+            }
+            if (afResponse == null) {
+                String host = (ep != null) ? ep.host : (activeCameraIp != null ? activeCameraIp : "192.168.107.1");
+                String directUrl = "http://" + host + ":7676/smp_4_";
+                afResponse = sendSoapRequest(directUrl, "\"" + UPNP_SERVICE_CONTENT_DIR + "#" + actName + "\"", soapBody, 30000);
             }
             if (afResponse != null) {
                 String unescaped = unescapeXml(afResponse);
@@ -2567,7 +2671,17 @@ public class ViewfinderClient {
      * 3. Registers the saved photo with Android MediaScanner so it appears immediately in the gallery.
      */
     private static String downloadCapturedPhoto(String fileUrl, Context context) {
-        if (fileUrl == null || fileUrl.isEmpty() || !isSafeCameraUrl(fileUrl)) {
+        if (fileUrl == null || fileUrl.trim().isEmpty()) {
+            return null;
+        }
+        String cleanUrl = fileUrl.trim();
+        if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+            if (!cleanUrl.startsWith("/")) cleanUrl = "/" + cleanUrl;
+            String host = (activeCameraIp != null && !activeCameraIp.isEmpty()) ? activeCameraIp : "192.168.107.1";
+            cleanUrl = "http://" + host + ":7678" + cleanUrl;
+        }
+        if (!isSafeCameraUrl(cleanUrl)) {
+            Log.w(TAG, "downloadCapturedPhoto: URL failed safety check: " + cleanUrl);
             return null;
         }
         try {
@@ -2577,8 +2691,8 @@ public class ViewfinderClient {
             String baseName = "NX_RVF_" + System.currentTimeMillis();
             File targetFile = new File(dcimDir, baseName + ".JPG");
 
-            String thumbUrl = fileUrl.endsWith("_SM") ? fileUrl : (fileUrl + "_SM");
-            String fullUrl = fileUrl.endsWith("_SM") ? fileUrl.substring(0, fileUrl.length() - 3) : fileUrl;
+            String thumbUrl = cleanUrl.endsWith("_SM") ? cleanUrl : (cleanUrl + "_SM");
+            String fullUrl = cleanUrl.endsWith("_SM") ? cleanUrl.substring(0, cleanUrl.length() - 3) : cleanUrl;
 
             boolean hasSavedFile = false;
 
@@ -2685,6 +2799,7 @@ public class ViewfinderClient {
 
 
     private static String sendSoapRequest(String urlString, String soapAction, String soapXml, int timeoutMs) {
+        lastSoapCommandTime = System.currentTimeMillis();
         try {
             String cleanAction = soapAction != null ? soapAction.replace("\"", "") : "";
             String serviceType = UPNP_SERVICE_CONTENT_DIR;
@@ -2754,6 +2869,7 @@ public class ViewfinderClient {
     }
 
     public static void disconnect() {
+        stopKeepAlive();
         stopLiveStream();
         lastFrameCallback = null;
         primaryEndpoint = null;

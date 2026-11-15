@@ -406,6 +406,11 @@ public class ViewfinderActivity extends Activity {
         }
         ViewfinderClient.startLiveStream(cameraIp, new ViewfinderClient.FrameCallback() {
             @Override
+            public boolean isReadyForFrame() {
+                return !isFrameRendering.get();
+            }
+
+            @Override
             public void onFrame(final Bitmap frame) {
                 if (frame == null) return;
                 if (isFrameRendering.compareAndSet(false, true)) {
@@ -413,8 +418,12 @@ public class ViewfinderActivity extends Activity {
                         @Override
                         public void run() {
                             try {
-                                layoutPlaceholder.setVisibility(View.GONE);
-                                imgPreview.setVisibility(View.VISIBLE);
+                                if (layoutPlaceholder.getVisibility() != View.GONE) {
+                                    layoutPlaceholder.setVisibility(View.GONE);
+                                }
+                                if (imgPreview.getVisibility() != View.VISIBLE) {
+                                    imgPreview.setVisibility(View.VISIBLE);
+                                }
                                 imgPreview.setImageBitmap(frame);
                             } finally {
                                 isFrameRendering.set(false);
@@ -443,18 +452,25 @@ public class ViewfinderActivity extends Activity {
         }
 
         mainHandler.removeCallbacks(focusReleaseRunnable);
+        final boolean wasFocusLocked = isFocusLocked;
         isFocusLocked = false;
 
         btnShutter.setEnabled(false);
         btnShutter.setAlpha(0.5f);
-        txtStatusBadge.setText("📸 Capturing photo...");
+        if (wasFocusLocked) {
+            txtStatusBadge.setText("📸 Capturing photo...");
+        } else {
+            txtStatusBadge.setText("🔍 Focusing & Capturing...");
+        }
         txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
         txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
-        Toast.makeText(this, "Capturing photo...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, wasFocusLocked ? "Capturing photo..." : "Focusing & Capturing...", Toast.LENGTH_SHORT).show();
 
         // Performs synchronized capture flow matching Samsung RVF:
-        // Live Stream Paused -> Shot -> Download _SM / image -> Resume Live Stream
-        ViewfinderClient.triggerShutter(connectedCameraIp, new ViewfinderClient.ShutterCallback() {
+        // If focus was already locked (user tapped preview screen), take shot immediately.
+        // If focus was not locked, autoFocusFirst = true engages autofocus before firing the shutter!
+        boolean autoFocus = !wasFocusLocked;
+        ViewfinderClient.triggerShutter(connectedCameraIp, autoFocus, new ViewfinderClient.ShutterCallback() {
             @Override
             public void onSuccess(final String savedFilePath) {
                 mainHandler.post(new Runnable() {
