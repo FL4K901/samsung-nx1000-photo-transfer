@@ -393,9 +393,9 @@ public class ViewfinderClient {
 
                 // 4. Give SSDP priority (matching MobileLinkClient and official RVF app)
                 if (cameraIp == null || cameraIp.trim().isEmpty()) {
-                    long ssdpPriorityEnd = startTime + 3500;
+                    long ssdpPriorityEnd = startTime + 1800;
                     while (!resolved.get() && (System.currentTimeMillis() < ssdpPriorityEnd || handshakeInProgress.get())) {
-                        try { Thread.sleep(150); } catch (InterruptedException ignored) { break; }
+                        try { Thread.sleep(100); } catch (InterruptedException ignored) { break; }
                     }
                 }
 
@@ -425,16 +425,16 @@ public class ViewfinderClient {
                 notify1900Thread.interrupt();
                 searchThread.interrupt();
 
-                // 6. Execute GetInfomation SOAP Action in a calm retry loop (matching LiveShutter 1000ms retry)
+                // 6. Execute GetInfomation SOAP Action in a retry loop while camera transitions out of Waiting screen
                 boolean infoSuccess = false;
                 if (resolved.get() || !activeEndpoints.isEmpty() || primaryEndpoint != null) {
-                    for (int attempt = 1; attempt <= 6; attempt++) {
+                    for (int attempt = 1; attempt <= 15; attempt++) {
                         if (executeGetInformation(activeCameraIp)) {
                             infoSuccess = true;
                             Log.i(TAG, "GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
                             break;
                         }
-                        try { Thread.sleep(800); } catch (InterruptedException ignored) { break; }
+                        try { Thread.sleep(350); } catch (InterruptedException ignored) { break; }
                     }
                 }
 
@@ -793,10 +793,9 @@ public class ViewfinderClient {
 
                 String st = (serviceType != null && !serviceType.isEmpty()) ? serviceType : UPNP_SERVICE_CONTENT_DIR;
 
-                // Only fetch SCPDURL for ContentDirectory (or until our primary RVF service is found),
-                // matching LiveShutter.checkDevice in remote-viewfinder-2-2-11-multi-android.apk.
-                boolean shouldFetchScpd = st.contains("ContentDirectory") || prioritized.isEmpty();
-                if (shouldFetchScpd && scpdUrl != null && !scpdUrl.isEmpty()) {
+                // Fetch SCPDURL for every service in <serviceList> (/smp_3_ ContentDirectory and /smp_7_ ConnectionManager),
+                // matching MobileLinkClient.java and LiveShutter.checkDevice in remote-viewfinder-2-2-11-multi-android.apk.
+                if (scpdUrl != null && !scpdUrl.isEmpty()) {
                     String fullScpd = resolveRelativeUrl(baseUrl, locationUrl, scpdUrl);
                     if (isSafeCameraUrl(fullScpd)) {
                         try {
