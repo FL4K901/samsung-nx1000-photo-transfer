@@ -1,6 +1,6 @@
 # Samsung NX1000 Wireless Photo Transfer (NX Cam Link)
 
-[![Release](https://img.shields.io/badge/Release-v1.6.2-blue.svg)](release/NX-MobileLink-v1.6.2.apk)
+[![Release](https://img.shields.io/badge/Release-v1.6.3-blue.svg)](release/NX-MobileLink-v1.6.3.apk)
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2021--34)-green.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 [![Attribution](https://img.shields.io/badge/Legal-Attribution-orange.svg)](ATTRIBUTION.md)
@@ -116,6 +116,13 @@ The output APK will be generated, zip-aligned, and signed with v1, v2, and v3 si
 ---
 
 ## 📋 Changelog
+
+### Version 1.6.3
+* **Restored Exact Working RVF Handshake (`remote-viewfinder-2-2-11-multi-android.apk` + `v1.5.1`)**:
+  - Removed the `rawHttpStatus > 0` early-abort in `HumbleHttpClient.httpGetXml` that prevented `HttpURLConnection` fallback when reading UPnP XML descriptions from the camera's HTTP/1.0 server.
+  - Fixed `attemptedLocations` in `ViewfinderClient` so temporary HTTP probe failures on `/smp_2_` are never permanently blacklisted across retry iterations.
+  - Removed raw TCP port-scan connect/close (`isPortOpen`) before HTTP UPnP description probing so the camera's single-threaded VxWorks HTTP server on port `7676` is never stalled by an empty socket right before `GET /smp_2_`.
+  - Restored full service SCPD (`/smp_3_`, `/smp_7_`) + GENA `SUBSCRIBE` (`/smp_5_`, `/smp_8_`) + unconditional 25-attempt `GetInfomation` handshake loop (with automatic fallback to `/smp_4_` and `http://192.168.107.1:7679/livestream.avi`).
 
 ### Version 1.6.0
 * **64-bit H.264 Live Viewfinder Engine (`H264Player` Architecture)**: Integrated the 32-bit shift-register sliding-window AVI demuxer (`movi` / `00dc` / `00db`) and direct `MediaCodec` (`video/avc` 640x480 `COLOR_FormatYUV420Flexible`) initialization from `LORQUAD08/Samsung-SmartCamera-64bit-NX-Mod`, eliminating `csd-0` deadlocks and dropped H.264 frames via pre-input output buffer draining and 40x input buffer retry loops.

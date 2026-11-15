@@ -191,12 +191,6 @@ public class HumbleHttpClient {
             client.close();
         }
 
-        // If the camera's HTTP server already responded with an HTTP status code (e.g., 404),
-        // do not hit its single-threaded server a second time with HttpURLConnection.
-        if (rawHttpStatus > 0) {
-            return null;
-        }
-
         // Path 2: CyberGarage HttpURLConnection fallback
         HttpURLConnection urlCon = null;
         InputStream urlIn = null;

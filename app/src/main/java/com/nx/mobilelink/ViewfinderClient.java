@@ -392,14 +392,12 @@ public class ViewfinderClient {
                 searchThread.start();
 
                 // 4. Give SSDP priority (matching MobileLinkClient and official RVF app)
-                if (cameraIp == null || cameraIp.trim().isEmpty()) {
-                    long ssdpPriorityEnd = startTime + 1800;
-                    while (!resolved.get() && (System.currentTimeMillis() < ssdpPriorityEnd || handshakeInProgress.get())) {
-                        try { Thread.sleep(100); } catch (InterruptedException ignored) { break; }
-                    }
+                long ssdpPriorityEnd = startTime + 1500;
+                while (!resolved.get() && (System.currentTimeMillis() < ssdpPriorityEnd || handshakeInProgress.get())) {
+                    try { Thread.sleep(100); } catch (InterruptedException ignored) { break; }
                 }
 
-                // 5. Gentle HTTP description fallback (only if SSDP did not resolve)
+                // 5. Direct HTTP description fallback (without raw TCP port-scan connect/close that stalls VxWorks httpd)
                 while (!resolved.get() && System.currentTimeMillis() < deadline) {
                     if (handshakeInProgress.get()) {
                         try { Thread.sleep(200); } catch (InterruptedException ignored) { break; }
@@ -409,39 +407,37 @@ public class ViewfinderClient {
                         if (resolved.get() || handshakeInProgress.get()) break;
                         for (int p : candidatePorts) {
                             if (resolved.get() || handshakeInProgress.get()) break;
-                            if (isPortOpen(ip, p, 350)) {
-                                Log.i(TAG, "Port " + p + " is open on " + ip + "! Probing UPnP description...");
-                                if (probeHttpEndpoint(ip, p, attemptedLocations, resolved)) {
-                                    break;
-                                }
+                            if (probeHttpEndpoint(ip, p, attemptedLocations, resolved)) {
+                                break;
                             }
                         }
                     }
                     if (resolved.get()) break;
-                    try { Thread.sleep(800); } catch (InterruptedException ignored) { break; }
+                    try { Thread.sleep(500); } catch (InterruptedException ignored) { break; }
                 }
 
                 notify1901Thread.interrupt();
                 notify1900Thread.interrupt();
                 searchThread.interrupt();
 
-                // 6. Execute GetInfomation SOAP Action in a retry loop while camera transitions out of Waiting screen
+                // 6. Always execute GetInfomation SOAP Action in a retry loop (up to 25 attempts, 250ms apart)
+                // Falls back to http://<cameraIp>:7676/smp_4_ if XML discovery didn't populate endpoints yet
                 boolean infoSuccess = false;
-                if (resolved.get() || !activeEndpoints.isEmpty() || primaryEndpoint != null) {
-                    for (int attempt = 1; attempt <= 15; attempt++) {
-                        if (executeGetInformation(activeCameraIp)) {
-                            infoSuccess = true;
-                            Log.i(TAG, "GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
-                            break;
-                        }
-                        try { Thread.sleep(350); } catch (InterruptedException ignored) { break; }
+                for (int attempt = 1; attempt <= 25; attempt++) {
+                    if (executeGetInformation(activeCameraIp)) {
+                        infoSuccess = true;
+                        Log.i(TAG, "GetInfomation succeeded on attempt " + attempt + " (streamUrl=" + activeStreamUrl + ")");
+                        break;
                     }
+                    try { Thread.sleep(250); } catch (InterruptedException ignored) { break; }
                 }
 
                 if (infoSuccess && activeStreamUrl != null && !activeStreamUrl.isEmpty()) {
                     callback.onConnected(activeCameraIp);
-                } else if (infoSuccess) {
-                    activeStreamUrl = "http://" + activeCameraIp + ":7678/stream.avi";
+                } else if (infoSuccess || resolved.get()) {
+                    if (activeStreamUrl == null || activeStreamUrl.isEmpty()) {
+                        activeStreamUrl = "http://" + activeCameraIp + ":7679/livestream.avi";
+                    }
                     callback.onConnected(activeCameraIp);
                 } else {
                     callback.onConnectionFailed("Camera not found in Remote Viewfinder mode. Please make sure the camera is in Remote Viewfinder mode and your phone is connected to its Wi-Fi.");
@@ -484,9 +480,10 @@ public class ViewfinderClient {
                         continue;
                     }
                     String location = extractHttpHeader(msg, "LOCATION");
-                    if (location != null && !location.isEmpty() && attemptedLocations.add(location)) {
+                    if (location != null && !location.isEmpty() && !attemptedLocations.contains(location)) {
                         Log.i(TAG, "SSDP NOTIFY on port " + port + " -> LOCATION: " + location);
                         if (fetchAndParseDeviceDescription(location)) {
+                            attemptedLocations.add(location);
                             resolved.set(true);
                             return;
                         }
@@ -519,7 +516,8 @@ public class ViewfinderClient {
             }
             socket.setSoTimeout(500);
 
-            // Exact 5-line CyberGarage SSDPSearchRequest packet (no USER-AGENT header in UDP M-SEARCH)
+            String ua = getUserAgent();
+            // Exact 5-line CyberGarage SSDPSearchRequest packet + User-Agent variant
             byte[] search1901All = (
                     "M-SEARCH * HTTP/1.1\r\n" +
                     "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_MOBILELINK + "\r\n" +
@@ -533,7 +531,8 @@ public class ViewfinderClient {
                     "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_MOBILELINK + "\r\n" +
                     "MAN: \"ssdp:discover\"\r\n" +
                     "MX: 3\r\n" +
-                    "ST: upnp:rootdevice\r\n\r\n"
+                    "ST: upnp:rootdevice\r\n" +
+                    "USER-AGENT: " + ua + "\r\n\r\n"
             ).getBytes(StandardCharsets.UTF_8);
 
             byte[] search1900All = (
@@ -549,7 +548,8 @@ public class ViewfinderClient {
                     "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT_STANDARD + "\r\n" +
                     "MAN: \"ssdp:discover\"\r\n" +
                     "MX: 3\r\n" +
-                    "ST: upnp:rootdevice\r\n\r\n"
+                    "ST: upnp:rootdevice\r\n" +
+                    "USER-AGENT: " + ua + "\r\n\r\n"
             ).getBytes(StandardCharsets.UTF_8);
 
             InetAddress multicastGroup = InetAddress.getByName(SSDP_ADDRESS);
@@ -560,7 +560,7 @@ public class ViewfinderClient {
             while (!resolved.get() && System.currentTimeMillis() < deadline) {
                 long now = System.currentTimeMillis();
                 if (now >= nextSendTime) {
-                    nextSendTime = now + 1000;
+                    nextSendTime = now + 900;
                     try { socket.send(new DatagramPacket(search1901All, search1901All.length, multicastGroup, SSDP_PORT_MOBILELINK)); } catch (Exception ignored) {}
                     try { socket.send(new DatagramPacket(search1901Root, search1901Root.length, multicastGroup, SSDP_PORT_MOBILELINK)); } catch (Exception ignored) {}
                     try { socket.send(new DatagramPacket(search1900All, search1900All.length, multicastGroup, SSDP_PORT_STANDARD)); } catch (Exception ignored) {}
@@ -571,7 +571,9 @@ public class ViewfinderClient {
                             try {
                                 InetAddress cip = InetAddress.getByName(candidateIps.get(i));
                                 socket.send(new DatagramPacket(search1901All, search1901All.length, cip, SSDP_PORT_MOBILELINK));
+                                socket.send(new DatagramPacket(search1901Root, search1901Root.length, cip, SSDP_PORT_MOBILELINK));
                                 socket.send(new DatagramPacket(search1900All, search1900All.length, cip, SSDP_PORT_STANDARD));
+                                socket.send(new DatagramPacket(search1900Root, search1900Root.length, cip, SSDP_PORT_STANDARD));
                             } catch (Exception ignored) {}
                         }
                     }
@@ -583,9 +585,10 @@ public class ViewfinderClient {
                     String resp = new String(recv.getData(), 0, recv.getLength(), StandardCharsets.UTF_8);
                     checkSsdpRotation(resp);
                     String location = extractHttpHeader(resp, "LOCATION");
-                    if (location != null && !location.isEmpty() && attemptedLocations.add(location)) {
+                    if (location != null && !location.isEmpty() && !attemptedLocations.contains(location)) {
                         Log.i(TAG, "SSDP M-SEARCH response -> LOCATION: " + location);
                         if (fetchAndParseDeviceDescription(location)) {
+                            attemptedLocations.add(location);
                             resolved.set(true);
                             return;
                         }
@@ -615,7 +618,7 @@ public class ViewfinderClient {
                 activeCameraIp = host;
                 String localIp = getLocalWifiIp(appContext);
 
-                String xml = HumbleHttpClient.httpGetXml(activeWifiNetwork, locationUrl, getUserAgent(), 4000);
+                String xml = HumbleHttpClient.httpGetXml(activeWifiNetwork, locationUrl, getUserAgent(), 3000);
                 if (xml != null && !xml.isEmpty()) {
                     parseDeviceDescriptionXml(xml, locationUrl, host, port, localIp);
                     return !activeEndpoints.isEmpty() || primaryEndpoint != null;
@@ -638,8 +641,9 @@ public class ViewfinderClient {
         for (String p : paths) {
             if (resolved.get() || handshakeInProgress.get()) return true;
             String testUrl = "http://" + ip + ":" + port + p;
-            if (!attemptedLocations.add(testUrl)) continue;
+            if (attemptedLocations.contains(testUrl)) continue;
             if (fetchAndParseDeviceDescription(testUrl)) {
+                attemptedLocations.add(testUrl);
                 resolved.set(true);
                 return true;
             }
@@ -807,6 +811,14 @@ public class ViewfinderClient {
                     }
                 }
 
+                // Subscribe to UPnP Event Sub URL (/smp_5_ and /smp_8_) if provided
+                if (eventSubUrl != null && !eventSubUrl.isEmpty()) {
+                    String fullEventSub = resolveRelativeUrl(baseUrl, locationUrl, eventSubUrl);
+                    if (isSafeCameraUrl(fullEventSub)) {
+                        sendUpnpSubscribe(fullEventSub, localIp, 8059);
+                    }
+                }
+
                 if (controlUrl != null && !controlUrl.isEmpty()) {
                     String normControl = controlUrl;
                     int epPort = basePort;
@@ -968,19 +980,15 @@ public class ViewfinderClient {
 
                 List<String> inArgs = ep.actionInputArgs.get("GetInfomation");
                 String[] argVariants;
-                if (inArgs != null) {
-                    if (inArgs.contains("GPSINFO")) {
-                        argVariants = new String[]{"<GPSINFO></GPSINFO>", null};
-                    } else {
-                        argVariants = new String[]{null};
-                    }
+                if (inArgs != null && inArgs.contains("GPSINFO")) {
+                    argVariants = new String[]{"<GPSINFO></GPSINFO>", null};
                 } else {
-                    argVariants = new String[]{null, "<GPSINFO></GPSINFO>"};
+                    argVariants = new String[]{null};
                 }
 
                 for (String argsXml : argVariants) {
                     String soapBody = buildSoapEnvelope(serviceType, "GetInfomation", argsXml);
-                    String response = sendSoapRequest(url, soapAction, soapBody, 5000);
+                    String response = sendSoapRequest(url, soapAction, soapBody, 4000);
                     if (response != null && parseGetInformationResponse(response, ep.host, ep.port)) {
                         primaryEndpoint = ep;
                         return true;
@@ -1089,7 +1097,7 @@ public class ViewfinderClient {
         }
 
         if (matched && (activeStreamUrl == null || activeStreamUrl.isEmpty())) {
-            activeStreamUrl = "http://" + cameraIp + ":7678/stream.avi";
+            activeStreamUrl = "http://" + cameraIp + ":7679/livestream.avi";
         }
 
         return matched;
@@ -1117,8 +1125,8 @@ public class ViewfinderClient {
                 if (activeStreamUrl != null && !activeStreamUrl.isEmpty()) {
                     streamUrls.add(activeStreamUrl);
                 } else {
-                    streamUrls.add("http://" + ip + ":7678/stream.avi");
                     streamUrls.add("http://" + ip + ":7679/livestream.avi");
+                    streamUrls.add("http://" + ip + ":7678/stream.avi");
                 }
 
                 int consecutiveErrors = 0;
