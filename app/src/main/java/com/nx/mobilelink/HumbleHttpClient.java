@@ -88,8 +88,7 @@ public class HumbleHttpClient {
      * The caller MUST call close() when finished reading the stream!
      */
     public InputStream request(Network network, String strUrl, String userAgent, int timeoutMs) throws Exception {
-        String accessMethod = (userAgent != null && userAgent.startsWith("SEC_RVF_")) ? "manual" : null;
-        return request(network, strUrl, userAgent, accessMethod, timeoutMs);
+        return request(network, strUrl, userAgent, null, timeoutMs);
     }
 
     public InputStream request(Network network, String strUrl, String userAgent, String accessMethod, int timeoutMs) throws Exception {
@@ -156,8 +155,7 @@ public class HumbleHttpClient {
      * 2. Fallback HttpURLConnection GET with Content-Length: 0, HOST: <host>, User-Agent
      */
     public static String httpGetXml(Network network, String urlStr, String userAgent, int timeoutMs) {
-        String accessMethod = (userAgent != null && userAgent.startsWith("SEC_RVF_")) ? "manual" : null;
-        return httpGetXml(network, urlStr, userAgent, accessMethod, timeoutMs);
+        return httpGetXml(network, urlStr, userAgent, null, timeoutMs);
     }
 
     public static String httpGetXml(Network network, String urlStr, String userAgent, String accessMethod, int timeoutMs) {
@@ -166,8 +164,10 @@ public class HumbleHttpClient {
         }
         // Path 1: CyberGarage raw HTTP/1.0 socket GET
         HumbleHttpClient client = new HumbleHttpClient();
+        int rawHttpStatus = 0;
         try {
             InputStream in = client.request(network, urlStr, userAgent, accessMethod, timeoutMs);
+            rawHttpStatus = client.getResponseCode();
             int expected = client.getContentLength();
             ByteArrayOutputStream baos = new ByteArrayOutputStream(expected > 0 ? expected : 4096);
             byte[] buf = new byte[4096];
@@ -185,9 +185,16 @@ public class HumbleHttpClient {
                 return xml;
             }
         } catch (Exception e) {
+            rawHttpStatus = client.getResponseCode();
             Log.d(TAG, "Raw HTTP/1.0 GET notice on " + urlStr + ": " + e.getMessage());
         } finally {
             client.close();
+        }
+
+        // If the camera's HTTP server already responded with an HTTP status code (e.g., 404),
+        // do not hit its single-threaded server a second time with HttpURLConnection.
+        if (rawHttpStatus > 0) {
+            return null;
         }
 
         // Path 2: CyberGarage HttpURLConnection fallback
@@ -305,8 +312,8 @@ public class HumbleHttpClient {
             if (client.responseCode >= 200 && client.responseCode < 300) {
                 return resp != null ? resp : "";
             }
-            if (client.responseCode > 0 && resp != null && !resp.isEmpty()) {
-                return resp;
+            if (client.responseCode > 0) {
+                return (resp != null && !resp.isEmpty()) ? resp : null;
             }
         } catch (Exception e) {
             Log.d(TAG, "Raw HTTP/1.0 SOAP POST notice (" + actionName + "): " + e.getMessage());

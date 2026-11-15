@@ -59,6 +59,8 @@ public class ViewfinderActivity extends Activity {
     private boolean isConnecting = false;
     private String connectedCameraIp = null;
     private boolean isFocusLocked = false;
+    private int autoRetryCount = 0;
+    private static final int MAX_AUTO_RETRIES = 3;
 
     private final Runnable focusReleaseRunnable = new Runnable() {
         @Override
@@ -322,12 +324,23 @@ public class ViewfinderActivity extends Activity {
     }
 
     private void startConnection(final String customIp) {
+        startConnection(customIp, true);
+    }
+
+    private void startConnection(final String customIp, final boolean resetRetries) {
         if (isConnecting) return;
+        if (resetRetries) {
+            autoRetryCount = 0;
+        }
         isConnecting = true;
 
         progressScan.setVisibility(View.VISIBLE);
         btnConnect.setEnabled(false);
-        txtStatusBadge.setText("Connecting to Remote Viewfinder...");
+        if (autoRetryCount > 0) {
+            txtStatusBadge.setText("Waiting for camera Remote Viewfinder... (Attempt " + (autoRetryCount + 1) + "/" + (MAX_AUTO_RETRIES + 1) + ")");
+        } else {
+            txtStatusBadge.setText("Connecting to Remote Viewfinder...");
+        }
         txtStatusBadge.setBackgroundResource(R.drawable.badge_searching);
         txtStatusBadge.setTextColor(getResources().getColor(R.color.status_orange_text));
 
@@ -343,6 +356,7 @@ public class ViewfinderActivity extends Activity {
                     public void run() {
                         mainHandler.removeCallbacks(connectionWatchdogRunnable);
                         isConnecting = false;
+                        autoRetryCount = 0;
                         progressScan.setVisibility(View.GONE);
                         btnConnect.setEnabled(true);
                         connectedCameraIp = cameraIp;
@@ -362,6 +376,19 @@ public class ViewfinderActivity extends Activity {
                     public void run() {
                         mainHandler.removeCallbacks(connectionWatchdogRunnable);
                         isConnecting = false;
+                        if (!isFinishing() && connectedCameraIp == null && isConnectedToWifi() && autoRetryCount < MAX_AUTO_RETRIES) {
+                            autoRetryCount++;
+                            txtStatusBadge.setText("Camera still on Waiting... Retrying (" + autoRetryCount + "/" + MAX_AUTO_RETRIES + ")");
+                            mainHandler.postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (!isFinishing() && connectedCameraIp == null && !isConnecting && isConnectedToWifi()) {
+                                        startConnection(customIp, false);
+                                    }
+                                }
+                            }, 2000);
+                            return;
+                        }
                         progressScan.setVisibility(View.GONE);
                         btnConnect.setEnabled(true);
                         updateStatusBanner();
